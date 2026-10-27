@@ -45,16 +45,28 @@ export function renderDashboard(ctx: ViewContext): HTMLElement {
         { class: 'compact' },
         ...day.exercises.slice(0, 6).map((pe) => {
           const ex = getExercise(pe.exerciseId);
-          return h('li', {}, h('a', { href: `#/exercises/${pe.exerciseId}` }, ex?.name ?? pe.exerciseId), ` · ${pe.sets} × ${pe.repsMin}–${pe.repsMax}`);
+          return h('li', {}, h('a', { href: `#/exercises/${pe.exerciseId}?from=home` }, ex?.name ?? pe.exerciseId), ` · ${pe.sets} × ${pe.repsMin}–${pe.repsMax}`);
         }),
       ),
       h('a', { href: `#/log/${day.id}`, class: 'button primary' }, inDays === 0 && !doneToday ? 'Start workout' : 'Log this workout'),
     );
   }
 
+  let installCard: HTMLElement | null = null;
+  const install = ctx.install;
+  if (install?.canPrompt && !install.isStandalone) {
+    const btn = h('button', { type: 'button', class: 'primary' }, 'Install app');
+    btn.addEventListener('click', async () => {
+      if (await install.prompt()) ctx.toast('GymFree installed.');
+      installCard?.remove();
+    });
+    installCard = h('section', { class: 'card install-card' }, h('span', {}, 'Install GymFree on this device for one-tap access, even offline.'), btn);
+  }
+
   return h(
     'main',
     { class: 'container' },
+    installCard,
     h('h1', {}, state.profile.name ? `Hi, ${state.profile.name}` : 'Your training'),
     h('p', { class: 'muted' }, `Goal: ${GOAL_PROFILES[state.goal].label}`),
     todayCard,

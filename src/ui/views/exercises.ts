@@ -2,36 +2,13 @@ import { prescription } from '../../core/planner';
 import { exerciseSeries, personalRecords } from '../../core/progress';
 import { MUSCLE_GROUPS, type MuscleGroup } from '../../core/types';
 import { formatWeight } from '../../core/units';
-import { filterExercises, getExercise, type Exercise } from '../../data/exercises';
+import { filterExercises, getExercise } from '../../data/exercises';
+import { PHOTO_CREDIT } from '../../data/photos';
 import { lineChart } from '../chart';
 import type { ViewContext } from '../context';
 import { clear, h, select } from '../dom';
-import { renderFigure } from '../figure';
+import { renderDemo } from '../demo';
 import { EQUIPMENT_LABELS, MUSCLE_LABELS } from '../labels';
-
-/** Renders figures lazily when cards scroll into view, and pauses off-screen animations. */
-function lazyFigure(ex: Exercise, animate: boolean): HTMLElement {
-  const holder = h('div', { class: 'figure-holder' });
-  const mount = () => {
-    if (!holder.firstChild) holder.appendChild(renderFigure(ex.motion, { animate, prop: ex.prop, label: ex.name }));
-  };
-  if (typeof IntersectionObserver === 'undefined') {
-    mount();
-    return holder;
-  }
-  const io = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) mount();
-      const el = holder.firstChild as SVGSVGElement | null;
-      if (el && typeof el.pauseAnimations === 'function') {
-        if (entry.isIntersecting) el.unpauseAnimations();
-        else el.pauseAnimations();
-      }
-    }
-  }, { rootMargin: '100px' });
-  io.observe(holder);
-  return holder;
-}
 
 export function renderExerciseList(ctx: ViewContext): HTMLElement {
   const { state } = ctx;
@@ -51,7 +28,7 @@ export function renderExerciseList(ctx: ViewContext): HTMLElement {
         h(
           'a',
           { href: `#/exercises/${ex.id}`, class: 'card exercise-card' },
-          lazyFigure(ex, ctx.animate()),
+          renderDemo(ex, { animate: false, size: 'thumb' }),
           h('strong', {}, ex.name),
           h('span', { class: 'muted' }, `${MUSCLE_LABELS[ex.primary]} · ${ex.equipment.map((e) => EQUIPMENT_LABELS[e]).join(' / ')}`),
         ),
@@ -72,21 +49,31 @@ export function renderExerciseList(ctx: ViewContext): HTMLElement {
     h('div', { class: 'row filters' }, muscleSel, search, h('label', { class: 'inline', for: 'only-mine' }, mine, ' only my equipment')),
     count,
     grid,
+    h('p', { class: 'muted small' }, PHOTO_CREDIT),
   );
 }
 
-export function renderExerciseDetail(ctx: ViewContext, id: string): HTMLElement {
+/** Where the "back" link of the exercise page leads, based on where the user came from. */
+export const BACK_TARGETS: Record<string, readonly [href: string, label: string]> = {
+  plan: ['#/plan', '← Back to my plan'],
+  'plan-edit': ['#/plan/edit', '← Back to editing'],
+  home: ['#/', '← Back to home'],
+  library: ['#/exercises', '← All exercises'],
+};
+
+export function renderExerciseDetail(ctx: ViewContext, id: string, from = 'library'): HTMLElement {
+  const [backHref, backLabel] = BACK_TARGETS[from] ?? BACK_TARGETS.library;
   const ex = getExercise(id);
   if (!ex) {
-    return h('main', { class: 'container' }, h('h1', {}, 'Exercise not found'), h('a', { href: '#/exercises' }, 'Back to library'));
+    return h('main', { class: 'container' }, h('h1', {}, 'Exercise not found'), h('a', { href: backHref }, backLabel));
   }
   const { state } = ctx;
   let animate = ctx.animate();
-  const figureBox = h('div', { class: 'figure-large' });
+  const figureBox = h('div', { class: 'demo-large' });
   const toggle = h('button', { type: 'button', class: 'secondary', 'aria-pressed': String(animate) });
   const drawFigure = () => {
-    figureBox.replaceChildren(renderFigure(ex.motion, { animate, prop: ex.prop, label: ex.name }));
-    toggle.textContent = animate ? 'Show start/end images' : 'Show animation';
+    figureBox.replaceChildren(renderDemo(ex, { animate }));
+    toggle.textContent = animate ? 'Show still images' : 'Play animation';
     toggle.setAttribute('aria-pressed', String(animate));
   };
   toggle.addEventListener('click', () => {
@@ -112,7 +99,7 @@ export function renderExerciseDetail(ctx: ViewContext, id: string): HTMLElement 
   return h(
     'main',
     { class: 'container' },
-    h('a', { href: '#/exercises', class: 'back' }, '← All exercises'),
+    h('a', { href: backHref, class: 'back' }, backLabel),
     h('h1', {}, ex.name),
     h('p', { class: 'muted' }, `${MUSCLE_LABELS[ex.primary]}${ex.secondary.length ? ` (also ${ex.secondary.map((g) => MUSCLE_LABELS[g]).join(', ')})` : ''} · ${ex.equipment.map((e) => EQUIPMENT_LABELS[e]).join(' / ')} · ${ex.level}`),
     h('div', { class: 'detail' }, h('div', {}, figureBox, toggle), h('div', {}, h('h2', {}, 'How to do it'), h('ol', {}, ...ex.steps.map((s) => h('li', {}, s))), h('p', { class: 'card note' }, '💡 ', ex.tip))),

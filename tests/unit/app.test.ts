@@ -50,16 +50,17 @@ describe('App: first run', () => {
     expect(root.querySelector('.error')?.textContent).toMatch(/at least one/);
     check(root.querySelector<HTMLInputElement>('#day-1')!, true);
     check(root.querySelector<HTMLInputElement>('#day-3')!, true);
-    change(root.querySelector<HTMLSelectElement>('#minutes')!, '30');
-    change(root.querySelector<HTMLSelectElement>('#time')!, 'morning');
-    change(root.querySelector<HTMLSelectElement>('#activity')!, 'sedentary');
+    check(root.querySelector<HTMLInputElement>('#minutes-30')!, true);
+    check(root.querySelector<HTMLInputElement>('#time-morning')!, true);
+    check(root.querySelector<HTMLInputElement>('#activity-sedentary')!, true);
+    check(root.querySelector<HTMLInputElement>('#experience-beginner')!, true);
     check(root.querySelector<HTMLInputElement>('#eq-kettlebell')!, true);
     check(root.querySelector<HTMLInputElement>('#eq-dumbbell')!, false);
     byText(root, 'button', 'Next').click();
-    // Step 3: about you
+    // Step 3: about you (optional)
+    expect(root.textContent).toContain('This step is optional');
     change(root.querySelector<HTMLInputElement>('#name')!, 'Jo');
-    change(root.querySelector<HTMLSelectElement>('#experience')!, 'beginner');
-    change(root.querySelector<HTMLSelectElement>('#sex')!, 'female');
+    check(root.querySelector<HTMLInputElement>('#sex-female')!, true);
     change(root.querySelector<HTMLInputElement>('#age')!, '28');
     change(root.querySelector<HTMLInputElement>('#height')!, '165');
     change(root.querySelector<HTMLInputElement>('#weight')!, '62');
@@ -77,11 +78,15 @@ describe('App: first run', () => {
     byText(root, 'button', 'Next').click();
     expect(root.textContent).toMatch(/kcal/);
     expect(root.querySelectorAll('article.card')).toHaveLength(2);
-    // Customise muscle groups on the first day
+    // The suggested plan is fixed until the user chooses to customise it
+    expect(root.querySelector('#pd-0-biceps')).toBeNull();
+    byText(root, 'button', 'Customise muscle groups').click();
     const biceps = root.querySelector<HTMLInputElement>('#pd-0-biceps')!;
     check(biceps, true);
     expect(root.querySelector<HTMLInputElement>('#pd-0-biceps')!.checked).toBe(true);
     check(root.querySelector<HTMLInputElement>('#pd-0-biceps')!, false);
+    byText(root, 'button', 'Done customising').click();
+    expect(root.querySelector('#pd-0-biceps')).toBeNull();
     byText(root, 'button', 'Save my plan').click();
     await settle(app, 12);
 
@@ -183,12 +188,14 @@ describe('App: unlock, lock and auto-lock', () => {
     const { app, root } = await makeApp(onboardedState());
     await unlock(app, root);
     const expectations: [string, string][] = [
-      ['/plan', 'Your weekly plan'],
+      ['/plan', 'My weekly plan'],
+      ['/plan/edit', 'Edit your plan'],
       ['/exercises', 'Exercise library'],
       ['/exercises/squat-typo', 'Exercise not found'],
       ['/exercises/push-up', 'Push-up'],
+      ['/exercises/push-up?from=plan', 'Push-up'],
       ['/log', 'Log a workout'],
-      ['/log/free', 'Log: empty workout'],
+      ['/log/free', 'Free workout'],
       ['/progress', 'Progress'],
       ['/settings', 'Settings'],
       ['/onboarding', 'Update goal & routine'],
@@ -203,7 +210,7 @@ describe('App: unlock, lock and auto-lock', () => {
     const { app, root, storage } = await makeApp(onboardedState());
     await unlock(app, root);
     await go(app, '/settings');
-    change(root.querySelector<HTMLSelectElement>('#units')!, 'lb');
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
     await settle(app);
     const { Vault } = await import('../../src/core/vault');
     const data = await new Vault(storage, 1000).unlock<{ settings: { units: string } }>(PASS);
@@ -215,7 +222,7 @@ describe('App: unlock, lock and auto-lock', () => {
     await unlock(app, root);
     vi.spyOn(vault, 'save').mockRejectedValueOnce(new Error('disk full'));
     await go(app, '/settings');
-    change(root.querySelector<HTMLSelectElement>('#units')!, 'lb');
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
     await settle(app);
     expect(root.querySelector('.toast')?.textContent).toBe('Could not save: disk full');
   });
@@ -260,5 +267,36 @@ describe('App: restore from the welcome screen', () => {
     await settle(app, 12);
     expect(app.isUnlocked).toBe(true);
     expect(root.querySelector('h1')?.textContent).toBe('Hi, Alex');
+  });
+});
+
+describe('App: onboarding details', () => {
+  it('lets the user skip the optional "about you" step', async () => {
+    const s = onboardedState();
+    s.onboarded = false;
+    s.profile = { ...s.profile, name: '', age: null, heightCm: null, weightKg: null };
+    const { app, root } = await makeApp(s);
+    await unlock(app, root);
+    byText(root, 'button', 'Next').click();
+    byText(root, 'button', 'Next').click();
+    expect(root.querySelector('.steps .current')?.textContent).toBe('About you (optional)');
+    byText(root, 'button', 'Skip this step').click();
+    expect(root.querySelector('h2')?.textContent).toMatch(/Suggested plan/);
+    expect(root.querySelector('button.link')?.textContent).toBe('Customise muscle groups');
+    byText(root, 'button', 'Save my plan').click();
+    await settle(app, 12);
+    expect(app.currentState!.onboarded).toBe(true);
+    expect(app.currentState!.bodyLogs).toEqual([]);
+  });
+
+  it('toasts when connectivity changes and cleans up listeners', async () => {
+    const { app, root } = await makeApp(onboardedState());
+    window.dispatchEvent(new Event('offline'));
+    expect(root.querySelector('.toast')?.textContent).toMatch(/offline/);
+    window.dispatchEvent(new Event('online'));
+    expect(root.querySelector('.toast')?.textContent).toBe('Back online.');
+    app.dispose();
+    window.dispatchEvent(new Event('offline'));
+    expect(root.querySelector('.toast')?.textContent).toBe('Back online.');
   });
 });

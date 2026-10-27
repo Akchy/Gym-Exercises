@@ -1,11 +1,82 @@
 import { randomId } from '../../core/encoding';
 import { generatePlan, prescription, refillDay } from '../../core/planner';
 import { clampNumber, cleanText, MAX_NAME } from '../../core/state';
-import { MUSCLE_GROUPS, WEEKDAY_NAMES, type PlanDay, type Weekday } from '../../core/types';
+import { weekdayOf } from '../../core/dates';
+import { MUSCLE_GROUPS, WEEKDAY_NAMES, type PlanDay, type PlannedExercise, type Weekday } from '../../core/types';
 import { EXERCISES, filterExercises, getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
 import { h, select } from '../dom';
+import { renderDemo } from '../demo';
 import { MUSCLE_LABELS } from '../labels';
+
+export function prescriptionText(pe: Pick<PlannedExercise, 'sets' | 'repsMin' | 'repsMax' | 'restSec'>): string {
+  const reps = pe.repsMin === pe.repsMax ? `${pe.repsMin}` : `${pe.repsMin}–${pe.repsMax}`;
+  return `${pe.sets} sets × ${reps} reps · ${pe.restSec} s rest`;
+}
+
+/**
+ * One exercise as an expandable row: tap to see the demo and steps in place, without
+ * leaving the page. The demo is only mounted when opened, so images load on demand.
+ */
+export function exerciseItem(ctx: ViewContext, pe: PlannedExercise, from: string): HTMLElement {
+  const ex = getExercise(pe.exerciseId);
+  if (!ex) return h('li', {}, pe.exerciseId);
+  const content = h('div', { class: 'how-to' });
+  const details = h(
+    'details',
+    { class: 'exercise-item' },
+    h(
+      'summary',
+      {},
+      renderDemo(ex, { animate: false, size: 'thumb' }),
+      h('span', { class: 'ex-text' }, h('strong', {}, ex.name), h('span', { class: 'muted' }, prescriptionText(pe))),
+      h('span', { class: 'ex-hint', 'aria-hidden': 'true' }, 'How to'),
+    ),
+    content,
+  );
+  details.addEventListener('toggle', () => {
+    if (!details.open || content.firstChild) return;
+    content.append(
+      renderDemo(ex, { animate: ctx.animate() }),
+      h('ol', {}, ...ex.steps.map((step) => h('li', {}, step))),
+      h('p', { class: 'note-inline' }, '💡 ', ex.tip),
+      h('a', { href: `#/exercises/${ex.id}?from=${from}` }, 'Open full guide'),
+    );
+  });
+  return h('li', {}, details);
+}
+
+function orderedDays(plan: readonly PlanDay[]): PlanDay[] {
+  return [...plan].sort((a, b) => (a.weekday ?? 7) - (b.weekday ?? 7));
+}
+
+/** Read-only weekly plan: simple to scan, editing lives behind "Edit plan". */
+export function renderPlan(ctx: ViewContext): HTMLElement {
+  const today = weekdayOf(ctx.today());
+  const days = orderedDays(ctx.state.plan);
+  return h(
+    'main',
+    { class: 'container' },
+    h('div', { class: 'page-head' }, h('h1', {}, 'My weekly plan'), h('a', { href: '#/plan/edit', class: 'button secondary' }, 'Edit plan')),
+    days.length ? null : h('p', { class: 'muted' }, 'Your plan is empty. Use “Edit plan” to add a training day.'),
+    ...days.map((day) =>
+      h(
+        'section',
+        { class: `card plan-view${day.weekday === today ? ' today' : ''}`, 'aria-labelledby': `day-${day.id}` },
+        h(
+          'div',
+          { class: 'day-head' },
+          h('h2', { id: `day-${day.id}` }, day.weekday === null ? 'Any day' : WEEKDAY_NAMES[day.weekday], h('span', { class: 'day-title' }, day.name)),
+          day.weekday === today ? h('span', { class: 'badge' }, 'Today') : null,
+        ),
+        h('p', { class: 'muted' }, day.muscleGroups.map((g) => MUSCLE_LABELS[g]).join(' · ')),
+        h('ul', { class: 'exercise-list' }, ...day.exercises.map((pe) => exerciseItem(ctx, pe, 'plan'))),
+        day.cardioMinutes ? h('p', { class: 'muted' }, `+ ${day.cardioMinutes} min cardio of your choice`) : null,
+        h('a', { href: `#/log/${day.id}`, class: 'button primary' }, 'Start this workout'),
+      ),
+    ),
+  );
+}
 
 function numberInput(label: string, value: number, min: number, max: number, onSet: (v: number) => void): HTMLElement {
   const input = h('input', { type: 'number', min, max, step: 1, value, 'aria-label': label, class: 'num' });
@@ -34,7 +105,7 @@ function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {
   const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Muscle groups' });
   for (const g of MUSCLE_GROUPS) {
     const id = `m-${day.id}-${g}`;
-    const cb = h('input', { type: 'checkbox', id, checked: day.muscleGroups.includes(g) });
+    const cb = h('input', { type: 'checkbox', id, class: 'visually-hidden', checked: day.muscleGroups.includes(g) });
     cb.addEventListener('change', () =>
       mutateDay((d) => (d.muscleGroups = cb.checked ? [...d.muscleGroups, g] : d.muscleGroups.filter((x) => x !== g)), false),
     );
@@ -58,7 +129,7 @@ function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {
     return h(
       'tr',
       {},
-      h('td', {}, h('a', { href: `#/exercises/${pe.exerciseId}` }, ex?.name ?? pe.exerciseId)),
+      h('td', {}, h('a', { href: `#/exercises/${pe.exerciseId}?from=plan-edit` }, ex?.name ?? pe.exerciseId)),
       h('td', {}, numberInput(`Sets for ${ex?.name}`, pe.sets, 1, 10, (v) => mutateDay((d) => (d.exercises[ei].sets = v), false))),
       h(
         'td',
@@ -125,11 +196,11 @@ function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {
         )
       : h('p', { class: 'muted' }, 'No exercises yet.'),
     h('div', { class: 'row' }, picker, h('label', { class: 'inline', for: `all-${day.id}` }, showAll, ' show all exercises')),
-    h('div', { class: 'row' }, h('label', {}, 'Cardio minutes ', cardio), h('a', { href: `#/log/${day.id}`, class: 'button secondary' }, 'Log workout'), del),
+    h('div', { class: 'row' }, h('label', {}, 'Cardio minutes ', cardio), del),
   );
 }
 
-export function renderPlan(ctx: ViewContext): HTMLElement {
+export function renderPlanEditor(ctx: ViewContext): HTMLElement {
   const add = h('button', { type: 'button', class: 'secondary' }, '+ Add training day');
   add.addEventListener('click', () =>
     ctx.update((s) => s.plan.push({ id: randomId(8), name: 'Custom day', weekday: null, muscleGroups: [], exercises: [], cardioMinutes: 0 })),
@@ -143,8 +214,8 @@ export function renderPlan(ctx: ViewContext): HTMLElement {
   return h(
     'main',
     { class: 'container' },
-    h('h1', {}, 'Your weekly plan'),
-    h('p', { class: 'muted' }, 'Everything here is yours to change: days, muscle groups, exercises, sets, reps and rest.'),
+    h('div', { class: 'page-head' }, h('h1', {}, 'Edit your plan'), h('a', { href: '#/plan', class: 'button primary' }, 'Done')),
+    h('p', { class: 'muted' }, 'Changes save automatically. Change days, muscle groups, exercises, sets, reps and rest.'),
     h('div', { class: 'stack' }, ...ctx.state.plan.map((d, i) => dayCard(ctx, d, i))),
     h('div', { class: 'actions' }, add, h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine'), regen),
   );

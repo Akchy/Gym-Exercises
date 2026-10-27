@@ -1,5 +1,6 @@
 import type { AppState } from '../core/types';
 import type { Vault } from '../core/vault';
+import type { InstallManager } from '../pwa/register';
 
 export interface ViewContext {
   state: AppState;
@@ -15,4 +16,6 @@ export interface ViewContext {
   vault: Vault;
   today(): string;
   animate(): boolean;
+  /** Present when the browser supports installing the app. */
+  install?: InstallManager;
 }

@@ -3,7 +3,7 @@ import { DecryptionError } from '../../core/crypto';
 import { sanitizeState } from '../../core/state';
 import type { AppState } from '../../core/types';
 import type { ViewContext } from '../context';
-import { field, h, select } from '../dom';
+import { choiceGroup, field, h, select } from '../dom';
 import { MAX_BACKUP_BYTES } from './lock';
 
 export { MAX_BACKUP_BYTES };
@@ -23,8 +23,13 @@ function download(name: string, content: string) {
 
 export function renderSettings(ctx: ViewContext): HTMLElement {
   const { state } = ctx;
-  const units = select([['kg', 'Kilograms (kg)'], ['lb', 'Pounds (lb)']] as const, state.settings.units, { id: 'units' });
-  units.addEventListener('change', () => ctx.update((s) => (s.settings.units = units.value as 'kg' | 'lb')));
+  const units = choiceGroup({
+    name: 'units',
+    legend: 'Weight units',
+    options: [['kg', 'Kilograms (kg)'], ['lb', 'Pounds (lb)']],
+    value: state.settings.units,
+    onChange: (v) => ctx.update((s) => (s.settings.units = v)),
+  });
   const animations = h('input', { type: 'checkbox', id: 'animations', checked: state.settings.animations });
   animations.addEventListener('change', () => ctx.update((s) => (s.settings.animations = animations.checked), { render: false }));
   const autoLock = select(
@@ -97,11 +102,28 @@ export function renderSettings(ctx: ViewContext): HTMLElement {
     await ctx.destroy();
   });
 
+  const install = ctx.install;
+  let installBody: HTMLElement;
+  if (install?.isStandalone || install?.installed) {
+    installBody = h('p', {}, '✓ Installed. GymFree opens like an app and works offline.');
+  } else if (install?.canPrompt) {
+    const btn = h('button', { type: 'button', class: 'primary' }, 'Install GymFree');
+    btn.addEventListener('click', async () => {
+      if (await install.prompt()) ctx.toast('GymFree installed.');
+    });
+    installBody = btn;
+  } else if (install?.isIos) {
+    installBody = h('p', {}, 'On iPhone or iPad: tap the Share button, then “Add to Home Screen”.');
+  } else {
+    installBody = h('p', {}, 'Use your browser menu and choose “Install app” or “Add to Home screen”.');
+  }
+
   return h(
     'main',
     { class: 'container' },
     h('h1', {}, 'Settings'),
-    h('section', { class: 'card' }, h('h2', {}, 'Preferences'), field('Weight units', units), h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')), field('Auto-lock after inactivity', autoLock), h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine')),
+    h('section', { class: 'card' }, h('h2', {}, 'Install & offline'), h('p', { class: 'muted' }, 'After your first visit, GymFree works without an internet connection, including all exercise photos.'), installBody),
+    h('section', { class: 'card' }, h('h2', {}, 'Preferences'), units, h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')), field('Auto-lock after inactivity', autoLock), h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine')),
     h('section', { class: 'card' }, h('h2', {}, 'Security'), h('p', { class: 'muted' }, 'Your data is encrypted with AES-256-GCM using a key derived from your passphrase (PBKDF2-SHA-256, 600,000 iterations). The passphrase is never stored.'), passForm, lockBtn),
     h('section', { class: 'card' }, h('h2', {}, 'Backup & restore'), h('p', { class: 'muted' }, 'Backups stay encrypted. Keep one somewhere safe, for example to move to a new device.'), exportBtn, importForm),
     h('section', { class: 'card danger-zone' }, h('h2', {}, 'Delete data'), h('p', {}, 'Permanently erase everything stored by this app on this device.'), field('Type DELETE to confirm', confirmInput), delBtn),

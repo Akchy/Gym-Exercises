@@ -6,10 +6,12 @@ import { MemoryStorageAdapter } from '../../src/core/storage';
 import { Vault } from '../../src/core/vault';
 import type { AppState, PlanDay } from '../../src/core/types';
 import { nextPlanDay, renderDashboard } from '../../src/ui/views/dashboard';
-import { lastWeight } from '../../src/ui/views/log';
+import { draftToEntries, lastWeight } from '../../src/ui/views/log';
+import { prescriptionText } from '../../src/ui/views/plan';
 import { failureDelayMs, renderUnlock } from '../../src/ui/views/lock';
-import { backupFileName, MAX_BACKUP_BYTES } from '../../src/ui/views/settings';
-import { renderExerciseList } from '../../src/ui/views/exercises';
+import { backupFileName, MAX_BACKUP_BYTES, renderSettings } from '../../src/ui/views/settings';
+import type { InstallManager } from '../../src/pwa/register';
+import { BACK_TARGETS } from '../../src/ui/views/exercises';
 import { byText, change, check, fakeContext, go, ITER, makeApp, onboardedState, PASS, settle, unlock } from './helpers';
 
 let app: App;
@@ -65,8 +67,64 @@ describe('dashboard', () => {
   });
 });
 
-describe('plan editor', () => {
+describe('plan (read-only)', () => {
   beforeEach(() => go(app, '/plan'));
+
+  it('shows a simple fixed plan with today highlighted and an edit button', () => {
+    expect(root.querySelector('h1')?.textContent).toBe('My weekly plan');
+    expect(byText(root, 'a', 'Edit plan').getAttribute('href')).toBe('#/plan/edit');
+    const sections = root.querySelectorAll('section.plan-view');
+    expect(sections).toHaveLength(3);
+    expect(sections[0].classList.contains('today')).toBe(true);
+    expect(sections[0].querySelector('.badge')?.textContent).toBe('Today');
+    expect(root.querySelectorAll('input, select')).toHaveLength(0);
+    expect(byText(sections[0] as HTMLElement, 'a', 'Start this workout').getAttribute('href')).toBe(`#/log/${state().plan[0].id}`);
+    const firstItem = sections[0].querySelector('.exercise-item summary')!;
+    expect(firstItem.textContent).toMatch(/sets × .* reps · \d+ s rest/);
+  });
+
+  it('expands an exercise in place to show how to do it', () => {
+    const details = root.querySelector<HTMLDetailsElement>('.exercise-item')!;
+    expect(details.querySelector('.how-to')!.childElementCount).toBe(0);
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    const howTo = details.querySelector('.how-to')!;
+    expect(howTo.querySelector('.demo')).not.toBeNull();
+    expect(howTo.querySelectorAll('ol li').length).toBeGreaterThan(1);
+    const link = byText(howTo as HTMLElement, 'a', 'Open full guide');
+    expect(link.getAttribute('href')).toMatch(/\?from=plan$/);
+    details.dispatchEvent(new Event('toggle')); // re-toggle doesn't duplicate content
+    expect(howTo.querySelectorAll('ol')).toHaveLength(1);
+    details.open = false;
+    details.dispatchEvent(new Event('toggle'));
+    expect(howTo.querySelectorAll('ol')).toHaveLength(1);
+  });
+
+  it('shows an empty state and cardio notes', async () => {
+    await app['context']().update((s) => {
+      s.plan[0].cardioMinutes = 20;
+      s.plan[1].weekday = null;
+    });
+    await go(app, '/plan');
+    expect(root.textContent).toContain('+ 20 min cardio');
+    expect(root.textContent).toContain('Any day');
+    await app['context']().update((s) => (s.plan = []));
+    expect(root.textContent).toContain('Your plan is empty');
+  });
+
+  it('formats prescriptions', () => {
+    expect(prescriptionText({ sets: 3, repsMin: 8, repsMax: 12, restSec: 90 })).toBe('3 sets × 8–12 reps · 90 s rest');
+    expect(prescriptionText({ sets: 5, repsMin: 5, repsMax: 5, restSec: 180 })).toBe('5 sets × 5 reps · 180 s rest');
+  });
+});
+
+describe('plan editor', () => {
+  beforeEach(() => go(app, '/plan/edit'));
+
+  it('has a Done button back to the fixed plan', () => {
+    expect(byText(root, 'a', 'Done').getAttribute('href')).toBe('#/plan');
+    expect(root.querySelector('.plan-day tbody a')?.getAttribute('href')).toMatch(/\?from=plan-edit$/);
+  });
 
   it('renames a day and changes its weekday', async () => {
     change(root.querySelector<HTMLInputElement>('.day-name')!, '  Chest Day  ');
@@ -173,45 +231,33 @@ describe('exercise library', () => {
     search.dispatchEvent(new Event('input'));
     expect(count()).toBe(1);
     expect(root.textContent).toContain('1 exercise');
-    expect(root.querySelector('.exercise-card svg.animated')).not.toBeNull();
+    expect(root.querySelector('.exercise-card img')).not.toBeNull();
   });
 
-  it('mounts figures lazily and pauses off-screen animations when IntersectionObserver exists', () => {
-    const callbacks: IntersectionObserverCallback[] = [];
-    const observe = vi.fn();
-    vi.stubGlobal('IntersectionObserver', class {
-      constructor(cb: IntersectionObserverCallback) { callbacks.push(cb); }
-      observe = observe;
-    });
-    const view = renderExerciseList(fakeContext(onboardedState(), { animate: () => true }));
-    const holder = view.querySelector('.figure-holder')!;
-    expect(holder.firstChild).toBeNull();
-    const svgProto = Object.getPrototypeOf(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
-    const pause = vi.fn();
-    const unpause = vi.fn();
-    svgProto.pauseAnimations = pause;
-    svgProto.unpauseAnimations = unpause;
-    callbacks[0]([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
-    expect(holder.querySelector('svg')).not.toBeNull();
-    expect(unpause).toHaveBeenCalled();
-    callbacks[0]([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver);
-    expect(pause).toHaveBeenCalled();
-    delete svgProto.pauseAnimations;
-    delete svgProto.unpauseAnimations;
-    vi.unstubAllGlobals();
+  it('uses photo thumbnails, with the stick figure as fallback', async () => {
+    await go(app, '/exercises');
+    check(root.querySelector<HTMLInputElement>('#only-mine')!, false);
+    const pushUp = byText(root, '.exercise-card', /Push-up/);
+    expect(pushUp.querySelector('img')?.getAttribute('src')).toBe('/exercises/push-up-0.webp');
+    expect(pushUp.querySelector('img')?.getAttribute('loading')).toBe('lazy');
+    const burpee = byText(root, '.exercise-card', /Burpee/);
+    expect(burpee.querySelector('svg.exercise-figure')).not.toBeNull();
+    expect(root.textContent).toContain('public domain');
   });
 
   it('shows details, toggles animation/stop images and adds to a plan day', async () => {
     await go(app, '/exercises/burpee');
     expect(root.querySelector('h1')?.textContent).toBe('Burpee');
     expect(root.querySelectorAll('ol li').length).toBeGreaterThan(1);
-    expect(root.querySelector('.figure-large svg.animated')).not.toBeNull();
-    const toggle = byText(root, 'button', 'Show start/end images');
+    expect(root.querySelector('.demo-large svg.animated')).not.toBeNull();
+    const toggle = byText(root, 'button', 'Show still images');
     toggle.click();
-    expect(root.querySelector('.figure-large svg.static')).not.toBeNull();
+    expect(root.querySelector('.demo-large svg.static')).not.toBeNull();
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.textContent).toBe('Play animation');
     toggle.click();
-    expect(root.querySelector('.figure-large svg.animated')).not.toBeNull();
+    expect(root.querySelector('.demo-large svg.animated')).not.toBeNull();
+    expect(byText(root, 'a', '← All exercises').getAttribute('href')).toBe('#/exercises');
     byText(root, 'button', 'Add to plan').click();
     await settle(app);
     expect(state().plan[0].exercises.some((e) => e.exerciseId === 'burpee')).toBe(true);
@@ -226,32 +272,89 @@ describe('exercise library', () => {
     check(root.querySelector<HTMLInputElement>('#animations')!, false);
     await settle(app);
     await go(app, '/exercises/push-up');
-    expect(root.querySelector('.figure-large svg.static')).not.toBeNull();
+    expect(root.querySelector('.demo-large .demo.photo.static')).not.toBeNull();
+  });
+
+  it('shows the professional photos as a cross-fade or start/end pair', async () => {
+    await go(app, '/exercises/push-up');
+    const anim = root.querySelector('.demo-large .demo.photo.animated')!;
+    expect([...anim.querySelectorAll('img')].map((i) => i.getAttribute('src'))).toEqual(['/exercises/push-up-0.webp', '/exercises/push-up-1.webp']);
+    byText(root, 'button', 'Show still images').click();
+    const still = root.querySelector('.demo-large .demo.photo.static')!;
+    expect([...still.querySelectorAll('figcaption')].map((f) => f.textContent)).toEqual(['1. Start', '2. End']);
+    expect(still.querySelector('img')?.getAttribute('alt')).toBe('Push-up: start position');
+  });
+
+  it('goes back to wherever the user came from', async () => {
+    for (const [from, href, label] of [
+      ['plan', '#/plan', '← Back to my plan'],
+      ['plan-edit', '#/plan/edit', '← Back to editing'],
+      ['home', '#/', '← Back to home'],
+      ['nonsense', '#/exercises', '← All exercises'],
+    ]) {
+      await go(app, `/exercises/push-up?from=${from}`);
+      expect(byText(root, 'a', label).getAttribute('href')).toBe(href);
+    }
+    await go(app, '/exercises/nope?from=plan');
+    expect(byText(root, 'a', '← Back to my plan')).toBeTruthy();
+    expect(BACK_TARGETS.plan[0]).toBe('#/plan');
   });
 });
 
 describe('workout logging', () => {
-  it('lists plan days and an empty workout option', async () => {
+  it('lists plan days and a free workout option', async () => {
     await go(app, '/log');
     expect(root.querySelectorAll('.link-card')).toHaveLength(4);
   });
 
-  it('logs a planned workout with edited sets', async () => {
+  it('starts each exercise with one empty set and shows targets as hints', async () => {
     const day = state().plan[0];
     await go(app, `/log/${day.id}`);
-    expect(root.querySelectorAll('.log-entry')).toHaveLength(day.exercises.length);
+    expect(root.querySelector('h1')?.textContent).toBe(day.name);
+    const entries = root.querySelectorAll('.log-entry');
+    expect(entries).toHaveLength(day.exercises.length);
+    for (const entry of entries) expect(entry.querySelectorAll('tbody tr')).toHaveLength(1);
+    const first = entries[0];
+    const reps = first.querySelector<HTMLInputElement>('input[aria-label$="set 1 reps"]')!;
+    expect(reps.value).toBe('');
+    expect(reps.placeholder).toBe(`${day.exercises[0].repsMin}–${day.exercises[0].repsMax}`);
+    expect(first.textContent).toContain('Target: ');
+    expect(first.querySelector('button[aria-label^="Remove set"]')).toBeNull();
+  });
+
+  it('shows how to do each exercise inside the log', async () => {
+    await go(app, `/log/${state().plan[0].id}`);
+    const details = root.querySelector<HTMLDetailsElement>('.how-to-toggle')!;
+    expect(details.querySelector('summary')?.textContent).toBe('How to do it');
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    expect(details.querySelector('.demo')).not.toBeNull();
+    expect(details.querySelectorAll('ol li').length).toBeGreaterThan(1);
+    details.dispatchEvent(new Event('toggle'));
+    expect(details.querySelectorAll('ol')).toHaveLength(1);
+  });
+
+  it('logs only the sets the user filled in', async () => {
+    const day = state().plan[0];
+    await go(app, `/log/${day.id}`);
     const first = root.querySelector('.log-entry')!;
     const name = first.querySelector('h2')!.textContent;
     change(first.querySelector<HTMLInputElement>(`input[aria-label="${name} set 1 reps"]`)!, '8');
     change(first.querySelector<HTMLInputElement>(`input[aria-label="${name} set 1 weight (kg)"]`)!, '22.5');
-    byText(first, 'button', '+ Set').click();
-    const sets = root.querySelector('.log-entry')!.querySelectorAll('tbody tr').length;
-    expect(sets).toBe(day.exercises[0].sets + 1);
-    root.querySelector('.log-entry')!.querySelector<HTMLButtonElement>('button[aria-label^="Remove set 2"]')!.click();
+    byText(first as HTMLElement, 'button', '+ Add set').click();
+    const again = root.querySelector('.log-entry')!;
+    expect(again.querySelectorAll('tbody tr')).toHaveLength(2);
+    expect(again.querySelector<HTMLInputElement>(`input[aria-label="${name} set 2 reps"]`)!.value).toBe('8');
+    change(again.querySelector<HTMLInputElement>(`input[aria-label="${name} set 2 reps"]`)!, '6');
+    change(again.querySelector<HTMLInputElement>(`input[aria-label="${name} set 2 weight (kg)"]`)!, '');
+    byText(again as HTMLElement, 'button', '+ Add set').click();
+    root.querySelector('.log-entry')!.querySelector<HTMLButtonElement>('button[aria-label^="Remove set 3"]')!.click();
     byText(root.querySelectorAll('.log-entry')[1] as HTMLElement, 'button', 'Remove exercise').click();
     expect(root.querySelectorAll('.log-entry')).toHaveLength(day.exercises.length - 1);
     change(root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!, 'plank');
     change(root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!, 'not-real');
+    change(root.querySelector<HTMLInputElement>('input[aria-label="Plank set 1 reps"]')!, '45');
+    change(root.querySelector<HTMLInputElement>('input[aria-label="Plank set 1 reps"]')!, '');
     change(root.querySelector<HTMLInputElement>('#log-duration')!, '50');
     root.querySelector<HTMLTextAreaElement>('#log-notes')!.value = 'Felt strong';
     root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
@@ -260,42 +363,49 @@ describe('workout logging', () => {
     expect(window.location.hash).toBe('#/progress');
     const log = state().workouts[0];
     expect(log).toMatchObject({ date: '2026-10-27', dayId: day.id, durationMin: 50, notes: 'Felt strong' });
-    expect(log.entries[0].sets[0]).toEqual({ reps: 8, weightKg: 22.5 });
-    expect(log.entries[0].sets).toHaveLength(day.exercises[0].sets);
-    expect(log.entries.at(-1)?.exerciseId).toBe('plank');
-    expect(root.textContent).toContain('Personal records');
+    expect(log.entries).toEqual([{ exerciseId: day.exercises[0].exerciseId, sets: [{ reps: 8, weightKg: 22.5 }, { reps: 6, weightKg: 0 }] }]);
 
-    // Next time, the last weight is prefilled
+    // Next time: still empty inputs, but the last weight appears as a hint
     await go(app, `/log/${day.id}`);
-    expect(root.querySelector<HTMLInputElement>(`input[aria-label="${name} set 1 weight (kg)"]`)!.value).toBe('22.5');
+    const w = root.querySelector<HTMLInputElement>(`input[aria-label="${name} set 1 weight (kg)"]`)!;
+    expect(w.value).toBe('');
+    expect(w.placeholder).toBe('22.5');
   });
 
   it('validates the form', async () => {
     await go(app, '/log/free');
-    const form = root.querySelector('form')!;
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(root.querySelectorAll('.log-entry')).toHaveLength(0);
+    root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
     expect(root.querySelector('.error')?.textContent).toMatch(/at least one set/);
     change(root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!, 'push-up');
+    expect(root.querySelector<HTMLInputElement>('input[aria-label="Push-up set 1 reps"]')!.placeholder).toBe('reps');
+    root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(root.querySelector('.error')?.textContent).toMatch(/at least one set/);
+    change(root.querySelector<HTMLInputElement>('input[aria-label="Push-up set 1 reps"]')!, '10');
     root.querySelector<HTMLInputElement>('#log-date')!.value = '2030-01-01';
     root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
     expect(root.querySelector('.error')?.textContent).toMatch(/valid date/);
     expect(state().workouts).toHaveLength(0);
-    // Removing the last set then adding a fresh one
-    root.querySelector<HTMLButtonElement>('button[aria-label^="Remove set 1"]')!.click();
-    byText(root, 'button', '+ Set').click();
-    expect(root.querySelector<HTMLInputElement>('input[aria-label="Push-up set 1 reps"]')!.value).toBe('10');
   });
 
   it('logs weights entered in pounds as kilograms', async () => {
     await go(app, '/settings');
-    change(root.querySelector<HTMLSelectElement>('#units')!, 'lb');
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
     await settle(app);
     await go(app, '/log/free');
     change(root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!, 'dumbbell-curl');
+    change(root.querySelector<HTMLInputElement>('input[aria-label="Dumbbell Biceps Curl set 1 reps"]')!, '10');
     change(root.querySelector<HTMLInputElement>('input[aria-label="Dumbbell Biceps Curl set 1 weight (lb)"]')!, '22.0462');
     root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
     await settle(app);
     expect(state().workouts[0].entries[0].sets[0].weightKg).toBeCloseTo(10, 2);
+  });
+
+  it('draftToEntries drops empty sets and exercises', () => {
+    expect(draftToEntries([
+      { exerciseId: 'push-up', target: null, sets: [{ reps: null, weightKg: 5 }, { reps: 0, weightKg: null }] },
+      { exerciseId: 'plank', target: null, sets: [{ reps: 30, weightKg: null }] },
+    ])).toEqual([{ exerciseId: 'plank', sets: [{ reps: 30, weightKg: 0 }] }]);
   });
 
   it('lastWeight returns the most recent weight', () => {
@@ -371,6 +481,9 @@ describe('settings', () => {
   beforeEach(() => go(app, '/settings'));
 
   it('changes preferences', async () => {
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
+    await settle(app);
+    expect(state().settings.units).toBe('lb');
     change(root.querySelector<HTMLSelectElement>('#auto-lock')!, '5');
     await settle(app);
     expect(state().settings.autoLockMinutes).toBe(5);
@@ -499,5 +612,45 @@ describe('lock screen helpers', () => {
     await settle();
     expect(el.querySelector('.error')?.textContent).toBe('No vault found');
     expect(sleep).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('install & offline UI', () => {
+  function manager(over: Partial<InstallManager>) {
+    return { canPrompt: false, isStandalone: false, isIos: false, installed: false, prompt: vi.fn(async () => true), subscribe: vi.fn(), ...over } as unknown as InstallManager;
+  }
+
+  it('shows an install card on the dashboard when the browser offers it', async () => {
+    const install = manager({ canPrompt: true });
+    const ctx = fakeContext(onboardedState(), { install });
+    const view = renderDashboard(ctx);
+    const btn = byText(view, 'button', 'Install app');
+    btn.click();
+    await settle();
+    expect(install.prompt).toHaveBeenCalled();
+    expect(ctx.toast).toHaveBeenCalledWith('GymFree installed.');
+    expect(view.querySelector('.install-card')).toBeNull();
+    expect(renderDashboard(fakeContext(onboardedState(), { install: manager({ canPrompt: true, isStandalone: true }) })).querySelector('.install-card')).toBeNull();
+    expect(renderDashboard(fakeContext(onboardedState())).querySelector('.install-card')).toBeNull();
+  });
+
+  it('explains how to install in settings for each platform', async () => {
+    const cases: [Partial<InstallManager> | undefined, RegExp][] = [
+      [{ isStandalone: true }, /Installed/],
+      [{ installed: true }, /Installed/],
+      [{ isIos: true }, /Add to Home Screen/],
+      [{}, /browser menu/],
+      [undefined, /browser menu/],
+    ];
+    for (const [over, text] of cases) {
+      const view = renderSettings(fakeContext(onboardedState(), { install: over ? manager(over) : undefined }));
+      expect(view.textContent).toMatch(text);
+    }
+    const install = manager({ canPrompt: true, prompt: vi.fn(async () => false) });
+    const ctx = fakeContext(onboardedState(), { install });
+    byText(renderSettings(ctx), 'button', 'Install GymFree').click();
+    await settle();
+    expect(install.prompt).toHaveBeenCalled();
+    expect(ctx.toast).not.toHaveBeenCalled();
   });
 });

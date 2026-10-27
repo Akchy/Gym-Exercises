@@ -7,19 +7,21 @@ import { createDefaultState, sanitizeState } from '../core/state';
 import type { AppState } from '../core/types';
 import type { Vault } from '../core/vault';
 import type { ViewContext } from './context';
+import type { InstallManager } from '../pwa/register';
 import { clear, h } from './dom';
 import { prefersReducedMotion } from './figure';
 import { renderDashboard } from './views/dashboard';
 import { renderExerciseDetail, renderExerciseList } from './views/exercises';
 import { renderLogForm, renderLogPicker } from './views/log';
 import { renderOnboarding } from './views/onboarding';
-import { renderPlan } from './views/plan';
+import { renderPlan, renderPlanEditor } from './views/plan';
 import { renderProgress } from './views/progress';
 import { renderSettings } from './views/settings';
 import { renderUnlock, renderWelcome, type LockHandlers } from './views/lock';
 
 export interface AppOptions {
   now?: () => Date;
+  install?: InstallManager;
   /** Window used for routing/events (injectable for tests). */
   win?: Window;
 }
@@ -42,6 +44,7 @@ export class App {
   private lockTimer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => Date;
   private readonly win: Window;
+  private readonly install?: InstallManager;
   private readonly toastEl: HTMLElement;
   private readonly mainEl: HTMLElement;
 
@@ -52,18 +55,25 @@ export class App {
   ) {
     this.now = opts.now ?? (() => new Date());
     this.win = opts.win ?? window;
+    this.install = opts.install;
     this.mainEl = h('div', { id: 'view' });
     this.toastEl = h('div', { class: 'toast', role: 'status', 'aria-live': 'polite' });
     this.win.addEventListener('hashchange', this.onHashChange);
+    this.win.addEventListener('offline', this.onOffline);
+    this.win.addEventListener('online', this.onOnline);
     for (const ev of ACTIVITY_EVENTS) this.win.addEventListener(ev, this.onActivity, { passive: true });
   }
 
   private readonly onHashChange = () => void this.render();
   private readonly onActivity = () => (this.lastActivity = Date.now());
+  private readonly onOffline = () => this.toast("You're offline. Everything keeps working on this device.");
+  private readonly onOnline = () => this.toast('Back online.');
 
   /** Removes global listeners and timers (the app is single-page, mostly useful in tests). */
   dispose(): void {
     this.win.removeEventListener('hashchange', this.onHashChange);
+    this.win.removeEventListener('offline', this.onOffline);
+    this.win.removeEventListener('online', this.onOnline);
     for (const ev of ACTIVITY_EVENTS) this.win.removeEventListener(ev, this.onActivity);
     if (this.lockTimer) clearInterval(this.lockTimer);
     this.lockTimer = null;
@@ -194,13 +204,14 @@ export class App {
       lock: () => this.lock(),
       today: () => toISODate(this.now()),
       animate: () => (this.state?.settings.animations ?? true) && !prefersReducedMotion(),
+      install: this.install,
     };
   }
 
   private nav(path: string): HTMLElement {
     const lockBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'Lock app', title: 'Lock' }, '🔒');
     lockBtn.addEventListener('click', () => this.lock());
-    const top = '/' + (path.split('/')[1] ?? '');
+    const top = '/' + (path.split('?')[0].split('/')[1] ?? '');
     return h(
       'header',
       { class: 'topbar' },
@@ -228,7 +239,9 @@ export class App {
       this.navigate('/onboarding');
       return;
     }
-    const [, section = '', param = ''] = path.split('/');
+    const [pathname, query = ''] = path.split('?');
+    const from = new URLSearchParams(query).get('from') ?? undefined;
+    const [, section = '', param = ''] = pathname.split('/');
     let view: HTMLElement;
     switch (section) {
       case '':
@@ -238,10 +251,10 @@ export class App {
         view = renderOnboarding(ctx);
         break;
       case 'plan':
-        view = renderPlan(ctx);
+        view = param === 'edit' ? renderPlanEditor(ctx) : renderPlan(ctx);
         break;
       case 'exercises':
-        view = param ? renderExerciseDetail(ctx, decodeURIComponent(param)) : renderExerciseList(ctx);
+        view = param ? renderExerciseDetail(ctx, decodeURIComponent(param), from) : renderExerciseList(ctx);
         break;
       case 'log':
         view = param ? renderLogForm(ctx, decodeURIComponent(param)) : renderLogPicker(ctx);

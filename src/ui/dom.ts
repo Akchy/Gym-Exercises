@@ -59,3 +59,36 @@ export function select<T extends string>(options: readonly (readonly [T, string]
 export function titleCase(s: string): string {
   return s.replace(/(^|[-\s])(\w)/g, (_, sep: string, c: string) => (sep === '-' ? ' ' : sep) + c.toUpperCase());
 }
+
+export type ChoiceOption<T extends string> = readonly [value: T, label: string, description?: string];
+
+/**
+ * Themed single-choice group (replaces native <select> where the options are few).
+ * Uses real radio inputs, visually hidden, so keyboard and screen readers work natively.
+ */
+export function choiceGroup<T extends string>(opts: {
+  name: string;
+  legend: string;
+  options: readonly ChoiceOption<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  layout?: 'chips' | 'cards';
+}): HTMLFieldSetElement {
+  const layout = opts.layout ?? 'chips';
+  const group = h('div', { class: layout === 'cards' ? 'choice-grid' : 'chips', role: 'radiogroup', 'aria-label': opts.legend });
+  for (const [value, label, description] of opts.options) {
+    const id = `${opts.name}-${value}`;
+    const input = h('input', { type: 'radio', name: opts.name, value, id, checked: value === opts.value, class: 'visually-hidden' });
+    input.addEventListener('change', () => input.checked && opts.onChange(value));
+    group.appendChild(
+      h(
+        'label',
+        { class: layout === 'cards' ? 'choice' : 'chip', for: id },
+        input,
+        layout === 'cards' ? h('strong', {}, label) : label,
+        description ? h('span', { class: 'muted' }, description) : null,
+      ),
+    );
+  }
+  return h('fieldset', {}, h('legend', {}, opts.legend), group);
+}
