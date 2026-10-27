@@ -94,6 +94,12 @@ Every host needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` at buil
 
 CI (`.github/workflows/ci.yml`) runs type checking, unit tests with coverage, and the Playwright E2E suite on branches and pull requests; `deploy.yml` runs them on `main` before deploying.
 
+## License
+
+The code is open source under the [MIT License](LICENSE): you can use, copy, change and share it, including commercially, as long as the license notice is kept.
+
+The exercise photos in `public/exercises/` are not covered by it: they come from [free-exercise-db](https://github.com/yuhonas/free-exercise-db) and are in the public domain (Unlicense).
+
 ## Disclaimer
 
 Plans and calorie estimates are general guidance, not medical advice.

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Free, subscription-less gym exercise planner with client-side encrypted progress tracking.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
