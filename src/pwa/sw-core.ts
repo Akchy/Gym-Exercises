@@ -10,7 +10,7 @@
 export const CACHE_PREFIX = 'gymfree-';
 
 export interface CacheLike {
-  addAll(requests: string[]): Promise<void>;
+  addAll(requests: Request[]): Promise<void>;
   match(request: Request | string): Promise<Response | undefined>;
   put(request: Request | string, response: Response): Promise<void>;
 }
@@ -23,7 +23,7 @@ export interface CacheStorageLike {
 
 export interface SwDeps {
   caches: CacheStorageLike;
-  fetch: (request: Request) => Promise<Response>;
+  fetch: (request: Request, init?: RequestInit) => Promise<Response>;
   /** Absolute scope URL, e.g. https://example.com/ */
   scope: string;
   version: string;
@@ -39,7 +39,8 @@ export function precacheUrls(deps: Pick<SwDeps, 'scope' | 'manifest'>): string[]
 
 export async function install(deps: SwDeps): Promise<void> {
   const cache = await deps.caches.open(cacheName(deps.version));
-  await cache.addAll(precacheUrls(deps));
+  // "reload" skips the browser's HTTP cache, so this version never stores an older page or file.
+  await cache.addAll(precacheUrls(deps).map((url) => new Request(url, { cache: 'reload' })));
 }
 
 export async function activate(deps: Pick<SwDeps, 'caches' | 'version'>): Promise<string[]> {
@@ -71,7 +72,9 @@ export async function handleFetch(request: Request, deps: SwDeps): Promise<Respo
     return (await cache.match(`${url.origin}${url.pathname}`)) ?? deps.fetch(request);
   }
   try {
-    const response = await deps.fetch(request);
+    // "no-cache": always check with the server. A page reused from the HTTP cache after a deploy
+    // would ask for app files that no longer exist and never start.
+    const response = await deps.fetch(request, { cache: 'no-cache' });
     if (response.ok) return response;
     throw new Error(`HTTP ${response.status}`);
   } catch {

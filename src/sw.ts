@@ -6,7 +6,7 @@ declare const self: ServiceWorkerGlobalScope;
 
 const deps: SwDeps = {
   caches: self.caches as unknown as SwDeps['caches'],
-  fetch: (r) => fetch(r),
+  fetch: (r, init) => fetch(r, init),
   scope: self.registration.scope,
   version: '__CACHE_VERSION__',
   manifest: JSON.parse('__PRECACHE_MANIFEST__') as string[],

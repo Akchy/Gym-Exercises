@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Free gym exercise planner: choose your goal, get a plan with animated exercise guides and track your progress. Private and encrypted, no subscription." />
+    <meta name="description" content="Free gym planner: choose your goal, get a weekly plan with photo guides for every exercise and track your progress. Works offline, no subscription." />
     <meta name="referrer" content="no-referrer" />
     <meta name="theme-color" content="#0f766e" />
+    <link rel="stylesheet" href="/boot.css" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -15,8 +16,16 @@
     <title>GymFree: Free Workout Planner</title>
   </head>
   <body>
-    <div id="app"><p class="boot">Loading…</p></div>
-    <noscript>This app needs JavaScript to encrypt and show your data.</noscript>
+    <div id="app">
+      <div class="boot" role="status">
+        <p class="boot-brand">GymFree</p>
+        <div class="boot-spinner" aria-hidden="true"></div>
+        <p>Loading…</p>
+        <!-- "?fresh" makes the browser fetch a new copy of the page instead of a cached one. -->
+        <p class="boot-slow">Taking longer than usual. <a href="./?fresh">Reload</a></p>
+      </div>
+    </div>
+    <noscript>GymFree needs JavaScript to run.</noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

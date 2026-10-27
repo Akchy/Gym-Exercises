@@ -21,10 +21,29 @@ export type StartResult =
   | { kind: 'welcome' }
   | { kind: 'ready'; state: AppState }
   /** Signed in after using the app without an account, and both sides have data. */
-  | { kind: 'link'; device: AppState; account: AppState };
+  | { kind: 'link'; device: AppState; account: AppState }
+  /** Signed in on a device with no saved copy, and the account couldn't be loaded. */
+  | { kind: 'unavailable' };
 
 /** Gives up after this many back-to-back conflicts (another device saving constantly). */
 const MAX_CONFLICT_RETRIES = 5;
+
+/** Rejects if `promise` takes longer than `ms`, so a hanging request can't freeze the app. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for the server')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /** A cloud row as validated app data, or null when it is missing or unusable. */
 function validVersion(rec: CloudRecord | null): Version | null {
@@ -43,6 +62,10 @@ function sameVersion(a: string | null, b: string | null): boolean {
 
 export interface RepositoryOptions {
   now?: () => Date;
+  /** How long the sign-in check at launch may take before the app opens without it (ms). */
+  launchTimeoutMs?: number;
+  /** How long any other request to the account may take (ms). */
+  requestTimeoutMs?: number;
 }
 
 export class Repository {
@@ -56,6 +79,8 @@ export class Repository {
   private readonly listeners = new Set<(s: SyncStatus) => void>();
   private readonly dataListeners = new Set<(s: AppState) => void>();
   private readonly now: () => Date;
+  private readonly launchTimeoutMs: number;
+  private readonly requestTimeoutMs: number;
 
   constructor(
     private readonly store: DeviceStore,
@@ -63,6 +88,13 @@ export class Repository {
     opts: RepositoryOptions = {},
   ) {
     this.now = opts.now ?? (() => new Date());
+    this.launchTimeoutMs = opts.launchTimeoutMs ?? 4_000;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 15_000;
+  }
+
+  /** A request to the account, given up after `requestTimeoutMs`. */
+  private request<T>(call: () => Promise<T>): Promise<T> {
+    return withTimeout(call(), this.requestTimeoutMs);
   }
 
   /** False when the app was built without Supabase settings (local-only app). */
@@ -107,9 +139,9 @@ export class Repository {
     if (this.cloud) {
       let user: CloudUser | null;
       try {
-        user = await this.cloud.currentUser();
+        user = await withTimeout(this.cloud.currentUser(), this.launchTimeoutMs);
       } catch {
-        // Offline (or Supabase unreachable): keep the last signed-in user and their cached data.
+        // Offline, slow or unreachable: open with the last signed-in user and their cached data.
         this.cloudReachable = false;
         user = this.store.rememberedUser();
       }
@@ -138,7 +170,11 @@ export class Repository {
       return { kind: 'ready', state: cached.state };
     }
     // New device: wait for the account's data instead of showing an empty app.
-    return { kind: 'ready', state: (await this.pull()) ?? createDefaultState(this.now()) };
+    const state = await this.pull();
+    if (state) return { kind: 'ready', state };
+    // No data and no answer: an empty app here could later be mistaken for the user's data.
+    if (this.status === 'offline' || this.status === 'error') return { kind: 'unavailable' };
+    return { kind: 'ready', state: createDefaultState(this.now()) };
   }
 
   private useCloudMode(user: CloudUser): void {
@@ -152,7 +188,7 @@ export class Repository {
   private async link(user: CloudUser, device: AppState): Promise<StartResult> {
     let account: Version | null;
     try {
-      account = validVersion(await this.cloud!.fetch(user.id));
+      account = validVersion(await this.request(() => this.cloud!.fetch(user.id)));
     } catch {
       // Can't see the account yet: keep using this device's data and try again next launch.
       return { kind: 'ready', state: this.chooseLocal() };
@@ -212,7 +248,7 @@ export class Repository {
       this.setStatus('saving');
       let saved: boolean;
       try {
-        saved = await cloud.save(user.id, rec.state, rec.updatedAt, rec.base);
+        saved = await this.request(() => cloud.save(user.id, rec.state, rec.updatedAt, rec.base));
       } catch (err) {
         return this.failed(err);
       }
@@ -226,7 +262,7 @@ export class Repository {
       if (++conflicts > MAX_CONFLICT_RETRIES) return this.setStatus('error', 'Another device keeps saving at the same time. Your changes are kept and will be retried.');
       let raw: CloudRecord | null;
       try {
-        raw = await cloud.fetch(user.id);
+        raw = await this.request(() => cloud.fetch(user.id));
       } catch (err) {
         return this.failed(err);
       }
@@ -254,7 +290,7 @@ export class Repository {
     const key = { user: user.id };
     let raw: CloudRecord | null;
     try {
-      raw = await cloud.fetch(user.id);
+      raw = await this.request(() => cloud.fetch(user.id));
     } catch (err) {
       this.failed(err);
       return null;
@@ -318,7 +354,7 @@ export class Repository {
   async deleteAll(): Promise<void> {
     if (this.mode === 'cloud' && this.user && this.cloud) {
       await this.idle();
-      await this.cloud.remove(this.user.id);
+      await this.request(() => this.cloud!.remove(this.user!.id));
       await this.signOut();
       return;
     }

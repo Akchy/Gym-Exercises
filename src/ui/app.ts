@@ -19,7 +19,7 @@ import { renderOnboarding } from './views/onboarding';
 import { renderPlan, renderPlanEditor } from './views/plan';
 import { renderProgress } from './views/progress';
 import { renderSettings, syncStatusText } from './views/settings';
-import { renderLinkChoice, renderWelcome } from './views/welcome';
+import { renderLinkChoice, renderUnavailable, renderWelcome } from './views/welcome';
 
 export interface AppOptions {
   now?: () => Date;
@@ -41,6 +41,8 @@ export class App {
   private state: AppState | null = null;
   /** "Which data should we keep?" after signing in with data on both sides. */
   private link: { device: AppState; account: AppState } | null = null;
+  /** Signed in on a new device, but the account's data couldn't be loaded. */
+  private unavailable = false;
   /** Newer data from another device, held back while a workout is being logged. */
   private pendingRemote: AppState | null = null;
   private readonly now: () => Date;
@@ -135,8 +137,12 @@ export class App {
     clear(this.root);
     this.root.append(this.mainEl, this.toastEl);
     const result = await this.repo.start();
+    // Start clean: "Try again" runs this a second time.
+    this.state = null;
+    this.link = null;
     if (result.kind === 'ready') this.state = result.state;
     if (result.kind === 'link') this.link = { device: result.device, account: result.account };
+    this.unavailable = result.kind === 'unavailable';
     await this.render();
     if (result.kind === 'ready' && this.repo.mode === 'cloud') void this.syncNow();
   }
@@ -280,6 +286,17 @@ export class App {
 
   /** The first screen: the "which data?" choice, or sign in / use without an account. */
   private renderEntry(): HTMLElement {
+    if (this.unavailable) {
+      return renderUnavailable({
+        email: this.repo.user?.email ?? null,
+        onRetry: () => this.start(),
+        onSignOut: async () => {
+          await this.repo.signOut();
+          this.unavailable = false;
+          await this.reset();
+        },
+      });
+    }
     if (this.link) {
       return renderLinkChoice(this.link, async (choice) => {
         this.state = await this.repo.resolveLink(choice);

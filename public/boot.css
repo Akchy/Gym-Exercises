@@ -1,0 +1,28 @@
+/*
+ * Loading screen shown before the app starts. Kept outside the app bundle (fixed file name,
+ * no JavaScript) so it still works when the app's files fail to load, e.g. a page cached
+ * from before a deploy asking for files that no longer exist. After a few seconds it offers
+ * a reload instead of "Loading…" forever. The app replaces it as soon as it starts.
+ */
+.boot {
+  min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 1rem;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: #5b6573; background: #f6f7f9; margin: 0;
+}
+.boot-brand { font-weight: 800; font-size: 1.4rem; color: #0f766e; margin: 0; }
+.boot-spinner {
+  width: 2rem; height: 2rem; border-radius: 50%;
+  border: 3px solid #dde2e8; border-top-color: #0f766e; animation: boot-spin 0.8s linear infinite;
+}
+.boot-slow { margin: 0; text-align: center; opacity: 0; animation: boot-show 0.3s ease 6s forwards; }
+.boot-slow a { color: #0f766e; font-weight: 600; }
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+@keyframes boot-show { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .boot-spinner { animation: none; }
+  .boot-slow { animation-duration: 0s; }
+}
+@media (prefers-color-scheme: dark) {
+  .boot { background: #0f1215; color: #9aa5b1; }
+  .boot-brand, .boot-slow a { color: #2dd4bf; }
+  .boot-spinner { border-color: #2b323a; border-top-color: #2dd4bf; }
+}

@@ -170,3 +170,26 @@ export function renderLinkChoice(data: { device: AppState; account: AppState }, 
     ),
   );
 }
+
+/** Signed in on a new device, but the account's data couldn't be loaded (offline or server down). */
+export function renderUnavailable(opts: { email: string | null; onRetry(): Promise<void>; onSignOut(): Promise<void> }): HTMLElement {
+  const retry = h('button', { type: 'button', class: 'primary wide' }, 'Try again');
+  retry.addEventListener('click', async () => {
+    retry.disabled = true;
+    retry.textContent = 'Trying…';
+    await opts.onRetry();
+  });
+  const signOut = h('button', { type: 'button', class: 'secondary wide' }, 'Sign out');
+  signOut.addEventListener('click', () => void opts.onSignOut());
+  return h(
+    'main',
+    { class: 'center' },
+    h(
+      'section',
+      { class: 'card narrow', 'aria-labelledby': 'unavailable-title' },
+      h('h1', { id: 'unavailable-title' }, "Couldn't load your data"),
+      h('p', {}, `You're signed in${opts.email ? ` as ${opts.email}` : ''}, but your plan and workouts couldn't be fetched. Check your connection and try again.`),
+      h('div', { class: 'stack' }, retry, signOut),
+    ),
+  );
+}

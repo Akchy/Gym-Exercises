@@ -447,6 +447,32 @@ describe('App: signed in with Google', () => {
     expect(root.textContent).toContain('Continue with Google');
   });
 
+  it("offers Try again or Sign out when a new device can't load the account", async () => {
+    const cloud = signedIn('Sam');
+    const realFetch = cloud.fetch.bind(cloud);
+    cloud.fetch = async () => {
+      throw new Error('TypeError: Failed to fetch');
+    };
+    const { app, root } = await makeApp(undefined, { cloud });
+    expect(root.querySelector('h1')?.textContent).toBe("Couldn't load your data");
+    expect(root.textContent).toContain('signed in as alex@example.com');
+    cloud.fetch = realFetch;
+    byText(root, 'button', 'Try again').click();
+    await settle(app, 12);
+    expect(root.querySelector('h1')?.textContent).toBe('Hi, Sam');
+
+    cloud.fetch = async () => {
+      throw new Error('TypeError: Failed to fetch');
+    };
+    localStorage.removeItem(`gymx:cache:${ALEX.id}`);
+    await app.start();
+    await settle(app);
+    byText(root, 'button', 'Sign out').click();
+    await settle(app);
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
+    expect(cloud.user).toBeNull();
+  });
+
   it('offers sign-in from Settings in local mode', async () => {
     const cloud = new FakeCloud();
     const { app, root } = await makeApp(onboardedState(), { cloud });

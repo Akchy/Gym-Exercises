@@ -246,6 +246,18 @@ test.describe('GymFree end-to-end', () => {
     await expect(page.getByRole('heading', { name: 'Progress', exact: true })).toBeVisible();
   });
 
+  test("never stuck on 'Loading…' when the app's files are missing (stale page after a deploy)", async ({ page }) => {
+    await page.route(/\/assets\/main-[^/]+\.js$/, (route) => route.fulfill({ status: 404, body: 'Not found' }));
+    await page.goto('./');
+    await expect(page.getByText('Loading…')).toBeVisible();
+    const reload = page.getByRole('link', { name: 'Reload' });
+    await expect(reload).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Taking longer than usual.')).toBeVisible();
+    await page.unroute(/\/assets\/main-[^/]+\.js$/);
+    await reload.click();
+    await expect(page.getByRole('heading', { name: FIRST_SCREEN })).toBeVisible();
+  });
+
   test('installable and works fully offline after the first visit', async ({ page, context }) => {
     await page.goto('./');
     const manifestHref = await page.locator('link[rel="manifest"]').getAttribute('href');

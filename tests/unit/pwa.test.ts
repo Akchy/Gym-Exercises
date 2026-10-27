@@ -14,8 +14,13 @@ import { InstallManager, registerServiceWorker } from '../../src/pwa/register';
 
 class FakeCache implements CacheLike {
   store = new Map<string, Response>();
-  async addAll(urls: string[]) {
-    for (const u of urls) this.store.set(u, new Response(`cached:${u}`));
+  /** The HTTP-cache mode each precached file was requested with. */
+  modes: string[] = [];
+  async addAll(requests: Request[]) {
+    for (const r of requests) {
+      this.modes.push(r.cache);
+      this.store.set(r.url, new Response(`cached:${r.url}`));
+    }
   }
   async match(req: Request | string) {
     const key = typeof req === 'string' ? req : req.url;
@@ -70,6 +75,8 @@ describe('service worker core', () => {
       'https://gym.example/assets/main.js',
       'https://gym.example/exercises/push-up-0.webp',
     ]);
+    // Bypass the browser's HTTP cache, so a new version never stores an old page or file.
+    expect(new Set(cache.modes)).toEqual(new Set(['reload']));
   });
 
   it('deletes only old gymfree caches on activate', async () => {
@@ -108,6 +115,9 @@ describe('service worker core', () => {
     const d = deps();
     await install(d);
     expect(await (await handleFetch(req('https://gym.example/', { mode: 'navigate' }), d))!.text()).toBe('network:https://gym.example/');
+    // Online page loads always check with the server (GitHub Pages lets browsers reuse a page
+    // for 10 minutes, which could pair an old page with files a new deploy removed).
+    expect(d.fetch).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://gym.example/' }), { cache: 'no-cache' });
     d.fetch = vi.fn().mockRejectedValue(new TypeError('offline'));
     expect(await (await handleFetch(req('https://gym.example/', { mode: 'navigate' }), d))!.text()).toBe('cached:https://gym.example/index.html');
     d.fetch = vi.fn().mockResolvedValue(new Response('err', { status: 500 }));

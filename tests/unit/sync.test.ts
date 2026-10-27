@@ -381,3 +381,47 @@ describe('Repository: sign out and delete', () => {
     expect(store.mode()).toBeNull();
   });
 });
+
+describe('Repository: slow or hanging server', () => {
+  const never = () => new Promise<never>(() => {});
+  const quick = () => new Repository(store, cloud, { now: () => new Date(T0 + (clock += 1000)), launchTimeoutMs: 20, requestTimeoutMs: 20 });
+
+  it('opens the landing page (sign-in unavailable) if the launch check hangs', async () => {
+    cloud.currentUser = never;
+    const r = quick();
+    expect((await r.start()).kind).toBe('welcome');
+    expect(r.signInAvailable).toBe(false);
+  });
+
+  it('opens from the saved copy if the launch check hangs for a signed-in user', async () => {
+    store.rememberUser(ALEX);
+    store.write({ user: ALEX.id }, { state: named('Cached'), updatedAt: at(1), dirty: false, base: at(1) });
+    cloud.currentUser = never;
+    const res = await quick().start();
+    expect(res.kind === 'ready' && res.state.profile.name).toBe('Cached');
+  });
+
+  it('keeps a change waiting (offline) if the upload hangs', async () => {
+    cloud.user = ALEX;
+    const r = quick();
+    await r.start();
+    cloud.save = never;
+    r.save(named('A'));
+    await r.idle();
+    expect(r.status).toBe('offline');
+    expect(r.hasPendingChanges()).toBe(true);
+  });
+
+  it("reports 'unavailable' on a new device when the account can't be loaded", async () => {
+    cloud.user = ALEX;
+    cloud.rows.set(ALEX.id, { data: named('Alex'), updatedAt: at(0) });
+    cloud.fetch = never;
+    expect((await quick().start()).kind).toBe('unavailable');
+  });
+
+  it('still opens an empty app for a brand-new account', async () => {
+    cloud.user = ALEX;
+    const res = await quick().start();
+    expect(res.kind).toBe('ready');
+  });
+});
