@@ -17,6 +17,11 @@ export interface DeviceRecord {
   updatedAt: string;
   /** True while changes are waiting to be uploaded (cloud mode only). */
   dirty: boolean;
+  /**
+   * The cloud version (its `updatedAt`) this data was last synced with, or null if never.
+   * An upload only replaces the cloud copy if it is still that version (cloud mode only).
+   */
+  base: string | null;
 }
 
 /** Which record: the local-mode data, or a signed-in user's cache. */
@@ -65,7 +70,7 @@ export class DeviceStore {
     const r = raw as Record<string, unknown>;
     if (typeof r.updatedAt !== 'string' || Number.isNaN(Date.parse(r.updatedAt))) return null;
     try {
-      return { state: sanitizeState(r.state), updatedAt: r.updatedAt, dirty: r.dirty === true };
+      return { state: sanitizeState(r.state), updatedAt: r.updatedAt, dirty: r.dirty === true, base: typeof r.base === 'string' ? r.base : null };
     } catch {
       return null;
     }
@@ -90,5 +95,23 @@ export class DeviceStore {
   rememberUser(user: CloudUser | null): void {
     if (user) this.writeJson('user', user);
     else this.storage.removeItem(PREFIX + 'user');
+  }
+
+  /** Unsaved workouts in progress, by plan day id (validated by the log screen). */
+  drafts(): Record<string, unknown> {
+    const d = this.readJson('drafts');
+    return d && typeof d === 'object' && !Array.isArray(d) ? (d as Record<string, unknown>) : {};
+  }
+
+  setDraft(dayId: string, draft: unknown | null): void {
+    const all = this.drafts();
+    if (draft === null) delete all[dayId];
+    else all[dayId] = draft;
+    if (Object.keys(all).length) this.writeJson('drafts', all);
+    else this.storage.removeItem(PREFIX + 'drafts');
+  }
+
+  clearDrafts(): void {
+    this.storage.removeItem(PREFIX + 'drafts');
   }
 }

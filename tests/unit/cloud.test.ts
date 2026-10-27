@@ -3,10 +3,10 @@ import { onboardedState } from './helpers';
 
 // A stand-in for the Supabase client: records calls and returns canned results.
 const calls: unknown[][] = [];
-let result: { data: unknown; error: { message: string } | null } = { data: null, error: null };
+let result: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
 const query = () => {
   const q: Record<string, unknown> = {};
-  for (const name of ['select', 'eq', 'upsert', 'delete', 'maybeSingle']) {
+  for (const name of ['select', 'eq', 'insert', 'update', 'delete', 'maybeSingle']) {
     q[name] = (...args: unknown[]) => {
       calls.push([name, ...args]);
       return q;
@@ -78,18 +78,43 @@ describe('createSupabaseCloud', () => {
 
     calls.length = 0;
     const state = onboardedState();
-    await cloud().save('u1', state, '2026-10-27T11:00:00.000Z');
-    expect(calls).toEqual([['from', 'user_data'], ['upsert', { user_id: 'u1', data: state, updated_at: '2026-10-27T11:00:00.000Z' }]]);
+    expect(await cloud().save('u1', state, '2026-10-27T11:00:00.000Z', null)).toBe(true);
+    expect(calls).toEqual([['from', 'user_data'], ['insert', { user_id: 'u1', data: state, updated_at: '2026-10-27T11:00:00.000Z' }]]);
 
     calls.length = 0;
     await cloud().remove('u1');
     expect(calls).toEqual([['from', 'user_data'], ['delete'], ['eq', 'user_id', 'u1']]);
   });
 
+  it('only replaces the row if it is still the expected version', async () => {
+    const state = onboardedState();
+    result = { data: [{ user_id: 'u1' }], error: null };
+    expect(await cloud().save('u1', state, '2026-10-27T12:00:00.000Z', '2026-10-27T11:00:00+00:00')).toBe(true);
+    expect(calls).toEqual([
+      ['from', 'user_data'],
+      ['update', { data: state, updated_at: '2026-10-27T12:00:00.000Z' }],
+      ['eq', 'user_id', 'u1'],
+      ['eq', 'updated_at', '2026-10-27T11:00:00+00:00'],
+      ['select', 'user_id'],
+    ]);
+    result = { data: [], error: null }; // someone else saved in between: nothing updated
+    expect(await cloud().save('u1', state, 'x', 'old')).toBe(false);
+    result = { data: null, error: { message: 'duplicate key', code: '23505' } }; // first save raced another device
+    expect(await cloud().save('u1', state, 'x', null)).toBe(false);
+  });
+
+  it('tells network failures apart from refusals', async () => {
+    const { isNetworkError } = await import('../../src/core/cloud');
+    expect(isNetworkError(new Error('TypeError: Failed to fetch'))).toBe(true);
+    expect(isNetworkError(new Error('Load failed'))).toBe(true);
+    expect(isNetworkError(new Error('permission denied for table user_data'))).toBe(false);
+  });
+
   it('turns Supabase errors into exceptions', async () => {
     result = { data: null, error: { message: 'permission denied' } };
     await expect(cloud().fetch('u1')).rejects.toThrow('permission denied');
-    await expect(cloud().save('u1', onboardedState(), 'x')).rejects.toThrow('permission denied');
+    await expect(cloud().save('u1', onboardedState(), 'x', null)).rejects.toThrow('permission denied');
+    await expect(cloud().save('u1', onboardedState(), 'x', 'y')).rejects.toThrow('permission denied');
     await expect(cloud().remove('u1')).rejects.toThrow('permission denied');
     await expect(cloud().signInWithGoogle()).rejects.toThrow('permission denied');
   });

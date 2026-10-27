@@ -43,7 +43,7 @@ export async function makeApp(initial?: AppState, opts: { cloud?: FakeCloud } = 
   const store = new DeviceStore(localStorage);
   if (initial) {
     store.setMode('local');
-    store.write('local', { state: initial, updatedAt: NOW.toISOString(), dirty: false });
+    store.write('local', { state: initial, updatedAt: NOW.toISOString(), dirty: false, base: null });
   }
   // Each save gets a later timestamp, like a real clock.
   let tick = 0;

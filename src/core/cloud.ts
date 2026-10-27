@@ -26,11 +26,21 @@ export interface Cloud {
   signInWithGoogle(): Promise<void>;
   signOut(): Promise<void>;
   fetch(userId: string): Promise<CloudRecord | null>;
-  save(userId: string, data: AppState, updatedAt: string): Promise<void>;
+  /**
+   * Saves the user's data only if the cloud still holds version `expected` (null: no row yet).
+   * Returns false when someone else saved in between, so the caller can merge and retry.
+   */
+  save(userId: string, data: AppState, updatedAt: string, expected: string | null): Promise<boolean>;
   remove(userId: string): Promise<void>;
 }
 
 const TABLE = 'user_data';
+
+/** True for "couldn't reach the server" failures, as opposed to the server refusing a request. */
+export function isNetworkError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (typeof navigator !== 'undefined' && navigator.onLine === false) || /failed to fetch|networkerror|load failed|network request failed|timed? ?out/i.test(message);
+}
 
 export function createSupabaseCloud(url: string, publishableKey: string, redirectTo: string): Cloud {
   if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/.test(url)) {
@@ -66,9 +76,22 @@ export function createSupabaseCloud(url: string, publishableKey: string, redirec
       fail(error);
       return data ? { data: data.data as unknown, updatedAt: String(data.updated_at) } : null;
     },
-    async save(userId, data, updatedAt) {
-      const { error } = await client.from(TABLE).upsert({ user_id: userId, data, updated_at: updatedAt });
+    async save(userId, data, updatedAt, expected) {
+      if (expected === null) {
+        const { error } = await client.from(TABLE).insert({ user_id: userId, data, updated_at: updatedAt });
+        if (error?.code === '23505') return false; // a row appeared meanwhile (unique violation)
+        fail(error);
+        return true;
+      }
+      // Compare-and-swap in one statement: only replaces the row if it is still `expected`.
+      const { data: rows, error } = await client
+        .from(TABLE)
+        .update({ data, updated_at: updatedAt })
+        .eq('user_id', userId)
+        .eq('updated_at', expected)
+        .select('user_id');
       fail(error);
+      return (rows ?? []).length > 0;
     },
     async remove(userId) {
       const { error } = await client.from(TABLE).delete().eq('user_id', userId);

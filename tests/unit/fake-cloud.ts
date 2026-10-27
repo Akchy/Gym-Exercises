@@ -5,12 +5,15 @@ import type { AppState } from '../../src/core/types';
 export class FakeCloud implements Cloud {
   user: CloudUser | null = null;
   offline = false;
+  /** When set, every request is refused with this server error (e.g. a misconfigured table). */
+  reject: string | null = null;
   readonly rows = new Map<string, CloudRecord>();
   readonly saves: string[] = [];
   signIns = 0;
 
   private net(): void {
-    if (this.offline) throw new Error('Failed to fetch');
+    if (this.offline) throw new Error('TypeError: Failed to fetch');
+    if (this.reject) throw new Error(this.reject);
   }
 
   async currentUser() {
@@ -27,10 +30,13 @@ export class FakeCloud implements Cloud {
     this.net();
     return this.rows.get(userId) ?? null;
   }
-  async save(userId: string, data: AppState, updatedAt: string) {
+  async save(userId: string, data: AppState, updatedAt: string, expected: string | null) {
     this.net();
+    const current = this.rows.get(userId);
+    if ((current?.updatedAt ?? null) !== expected) return false; // someone else saved in between
     this.saves.push(updatedAt);
     this.rows.set(userId, { data: structuredClone(data), updatedAt });
+    return true;
   }
   async remove(userId: string) {
     this.net();

@@ -10,8 +10,10 @@ export function backupFileName(today: string): string {
   return `gym-backup-${today}.json`;
 }
 
-export function syncStatusText(status: SyncStatus): string {
+export function syncStatusText(status: SyncStatus, error: string | null = null): string {
   switch (status) {
+    case 'error':
+      return `Couldn't save to your account: ${error ?? 'unknown error'}. Your changes are kept on this device and will be retried.`;
     case 'synced':
       return 'All changes saved to your account.';
     case 'saving':
@@ -34,7 +36,7 @@ function download(name: string, content: string) {
 
 function accountCard(ctx: ViewContext): HTMLElement {
   const { repo } = ctx;
-  const status = h('p', { class: 'muted', 'data-sync-status': '' }, syncStatusText(repo.status));
+  const status = h('p', { class: 'muted', 'data-sync-status': '' }, syncStatusText(repo.status, repo.lastError));
   if (repo.mode === 'cloud' && repo.user) {
     const signOut = h('button', { type: 'button', class: 'secondary' }, 'Sign out');
     signOut.addEventListener('click', async () => {
@@ -73,7 +75,11 @@ function backupCard(ctx: ViewContext): HTMLElement {
     } catch {
       return void (importMsg.textContent = 'That file is not a GymFree backup.');
     }
-    if (!confirm('Restoring replaces all your current data. Continue?')) return;
+    const signedIn = ctx.repo.mode === 'cloud';
+    // Offline, the restore could later lose to (or wipe out) changes made on another device.
+    if (signedIn && !navigator.onLine) return void (importMsg.textContent = 'Connect to the internet to restore a backup to your account.');
+    const where = signedIn ? 'in your account and on every signed-in device' : 'on this device';
+    if (!confirm(`Restoring replaces all your current data, ${where}. Continue?`)) return;
     await ctx.replaceState(data);
     ctx.toast('Backup restored.');
   });

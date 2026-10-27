@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from '../../src/ui/app';
 import { generatePlan } from '../../src/core/planner';
-import { createDefaultState } from '../../src/core/state';
+import { createDefaultState, MAX_WEIGHT_KG } from '../../src/core/state';
 import type { DeviceStore } from '../../src/core/store';
 import type { AppState, PlanDay } from '../../src/core/types';
 import { nextPlanDay, renderDashboard } from '../../src/ui/views/dashboard';
-import { draftToEntries, lastWeight } from '../../src/ui/views/log';
+import { draftToEntries, lastWeight, readDraft } from '../../src/ui/views/log';
 import { prescriptionText } from '../../src/ui/views/plan';
 import { backupFileName, MAX_BACKUP_BYTES, renderSettings, syncStatusText } from '../../src/ui/views/settings';
 import type { InstallManager } from '../../src/pwa/register';
@@ -397,6 +397,91 @@ describe('workout logging', () => {
     expect(state().workouts[0].entries[0].sets[0].weightKg).toBeCloseTo(10, 2);
   });
 
+  it('keeps an unfinished workout when leaving the page and picks it up again', async () => {
+    const day = state().plan[0];
+    await go(app, `/log/${day.id}`);
+    const firstName = root.querySelector('.log-entry h2')!.textContent!;
+    const reps = root.querySelector<HTMLInputElement>(`input[aria-label="${firstName} set 1 reps"]`)!;
+    reps.value = '9';
+    reps.dispatchEvent(new Event('input', { bubbles: true })); // typed, not yet left the field
+    root.querySelector<HTMLTextAreaElement>('#log-notes')!.value = 'felt strong';
+    root.querySelector('#log-notes')!.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await go(app, '/log');
+    expect(byText(root, `a[href="#/log/${day.id}"]`, /Unsaved workout in progress/)).toBeTruthy();
+    expect(root.querySelector('a[href="#/log/free"] .in-progress')).toBeNull();
+
+    await go(app, `/log/${day.id}`);
+    expect(root.textContent).toContain('Picked up your unsaved workout from earlier.');
+    expect(root.querySelector<HTMLInputElement>(`input[aria-label="${firstName} set 1 reps"]`)!.value).toBe('9');
+    expect(root.querySelector<HTMLTextAreaElement>('#log-notes')!.value).toBe('felt strong');
+
+    root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle(app);
+    expect(state().workouts.at(-1)?.notes).toBe('felt strong');
+    await go(app, `/log/${day.id}`);
+    expect(root.textContent).not.toContain('Picked up your unsaved workout');
+    expect(root.querySelector<HTMLInputElement>(`input[aria-label="${firstName} set 1 reps"]`)!.value).toBe('');
+  });
+
+  it('can discard an unfinished workout', async () => {
+    await go(app, '/log/free');
+    change(root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!, 'plank');
+    await go(app, '/');
+    await go(app, '/log/free');
+    expect(root.querySelectorAll('.log-entry')).toHaveLength(1);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    byText(root, 'button', 'Discard and start over').click();
+    await settle(app);
+    expect(root.querySelectorAll('.log-entry')).toHaveLength(1);
+    confirmSpy.mockReturnValue(true);
+    byText(root, 'button', 'Discard and start over').click();
+    await settle(app);
+    expect(root.querySelectorAll('.log-entry')).toHaveLength(0);
+    expect(root.textContent).not.toContain('Picked up');
+  });
+
+  it('readDraft accepts only well-formed drafts', () => {
+    expect(readDraft(null)).toBeNull();
+    expect(readDraft('x')).toBeNull();
+    const d = readDraft({
+      entries: [{ exerciseId: 'push-up', sets: [{ reps: 5.4, weightKg: 5000 }, { reps: 'x' }] }, { exerciseId: 'nope', sets: [] }, 'junk'],
+      date: '2026-13-01',
+      durationMin: -3,
+      notes: 'a\u0000b',
+    })!;
+    expect(d.entries).toEqual([{ exerciseId: 'push-up', sets: [{ reps: 5, weightKg: MAX_WEIGHT_KG }, { reps: null, weightKg: null }] }]);
+    expect(d.date).toBe('');
+    expect(d.durationMin).toBe(0);
+    expect(d.notes).toBe('ab');
+  });
+
+  it('caps weights at the same limit the saved data uses, and shows the correction', async () => {
+    const save = async (units: 'kg' | 'lb', typed: string) => {
+      await go(app, '/settings');
+      check(root.querySelector<HTMLInputElement>(`#units-${units}`)!, true);
+      await settle(app);
+      await go(app, '/log/free');
+      const picker = root.querySelector<HTMLSelectElement>('select[aria-label="Add exercise"]')!;
+      change(picker, 'barbell-squat');
+      change(root.querySelector<HTMLInputElement>('input[aria-label="Barbell Back Squat set 1 reps"]')!, '1');
+      const weight = root.querySelector<HTMLInputElement>(`input[aria-label="Barbell Back Squat set 1 weight (${units})"]`)!;
+      expect(Number(weight.max)).toBe(units === 'kg' ? MAX_WEIGHT_KG : 2204.6);
+      change(weight, typed);
+      const shown = weight.value;
+      root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      await settle(app);
+      return { shown, savedKg: state().workouts.at(-1)!.entries[0].sets[0].weightKg };
+    };
+    expect(await save('kg', '1500')).toEqual({ shown: '1000', savedKg: 1000 });
+    const lb = await save('lb', '3000');
+    expect(lb.shown).toBe('2204.6');
+    expect(lb.savedKg).toBeCloseTo(MAX_WEIGHT_KG, 6);
+    const ok = await save('lb', '2000');
+    expect(ok.shown).toBe('2000');
+    expect(ok.savedKg).toBeCloseTo(907.185, 3);
+  });
+
   it('draftToEntries drops empty sets and exercises', () => {
     expect(draftToEntries([
       { exerciseId: 'push-up', target: null, sets: [{ reps: null, weightKg: 5 }, { reps: 0, weightKg: null }] },
@@ -495,6 +580,7 @@ describe('settings', () => {
     expect(syncStatusText('saving')).toBe('Saving…');
     expect(syncStatusText('offline')).toMatch(/back online/);
     expect(syncStatusText('local')).toMatch(/this device only/);
+    expect(syncStatusText('error', 'permission denied')).toBe("Couldn't save to your account: permission denied. Your changes are kept on this device and will be retried.");
   });
 
   it('exports a plain backup file', async () => {
@@ -556,9 +642,8 @@ describe('settings', () => {
     byText(root, 'button', 'Delete all my data').click();
     await settle(app);
     expect(store.read('local')).toBeNull();
-    // No sign-in configured, so it starts over with the setup wizard.
-    expect(state().onboarded).toBe(false);
-    expect(window.location.hash).toBe('#/onboarding');
+    expect(app.currentState).toBeNull();
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
   });
 
   it('reports a failed delete instead of going back to the start', async () => {

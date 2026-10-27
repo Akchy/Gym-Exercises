@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { basePath } from '../../vite.config';
 
 /** First screen or setup, depending on whether the build has Supabase settings. */
-const FIRST_SCREEN = /Let's set you up|Free gym coach/;
+const FIRST_SCREEN = /Let's set you up|Your gym plan, built around your week/;
 
 /** Opens the app on a fresh device and starts without an account (works with or without Supabase settings). */
 async function start(page: Page) {

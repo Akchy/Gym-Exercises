@@ -4,14 +4,18 @@
  * - Local mode: data stays on this device only.
  * - Cloud mode (signed in with Google): every change is saved on the device first (so the
  *   app works offline), marked as waiting, and uploaded to Supabase when possible.
- *   When the device and the cloud disagree, the most recently changed copy wins.
+ *   Each device remembers which cloud version its data is based on. An upload only replaces
+ *   the cloud copy if nobody else saved since; otherwise the two are merged (see merge.ts),
+ *   so a device that was open or offline for a while never wipes out another device's work.
  */
-import type { Cloud, CloudRecord, CloudUser } from './cloud';
+import { isNetworkError, type Cloud, type CloudRecord, type CloudUser } from './cloud';
+import { mergeVersions, type Version } from './merge';
 import { createDefaultState, sanitizeState } from './state';
-import type { DeviceRecord, DeviceStore, Mode } from './store';
+import type { DeviceStore, Mode } from './store';
 import type { AppState } from './types';
 
-export type SyncStatus = 'local' | 'synced' | 'saving' | 'offline';
+/** "error" means the server refused a save (details in `lastError`); "offline" means it couldn't be reached. */
+export type SyncStatus = 'local' | 'synced' | 'saving' | 'offline' | 'error';
 
 export type StartResult =
   | { kind: 'welcome' }
@@ -19,24 +23,8 @@ export type StartResult =
   /** Signed in after using the app without an account, and both sides have data. */
   | { kind: 'link'; device: AppState; account: AppState };
 
-interface Version {
-  state: AppState;
-  updatedAt: string;
-}
-
-/** Which copy to keep when the device and the cloud may differ. */
-export function decide(
-  device: DeviceRecord | null,
-  cloud: Version | null,
-): 'use-cloud' | 'upload-device' | 'in-sync' | 'none' {
-  if (!device) return cloud ? 'use-cloud' : 'none';
-  if (!cloud) return 'upload-device';
-  const d = Date.parse(device.updatedAt);
-  const c = Date.parse(cloud.updatedAt);
-  if (c > d) return 'use-cloud';
-  if (d > c || device.dirty) return 'upload-device';
-  return 'in-sync';
-}
+/** Gives up after this many back-to-back conflicts (another device saving constantly). */
+const MAX_CONFLICT_RETRIES = 5;
 
 /** A cloud row as validated app data, or null when it is missing or unusable. */
 function validVersion(rec: CloudRecord | null): Version | null {
@@ -48,6 +36,11 @@ function validVersion(rec: CloudRecord | null): Version | null {
   }
 }
 
+/** Same cloud version? (Supabase may format the same time differently, e.g. "Z" vs "+00:00".) */
+function sameVersion(a: string | null, b: string | null): boolean {
+  return a !== null && b !== null && Date.parse(a) === Date.parse(b);
+}
+
 export interface RepositoryOptions {
   now?: () => Date;
 }
@@ -56,9 +49,12 @@ export class Repository {
   mode: Mode | null = null;
   user: CloudUser | null = null;
   status: SyncStatus = 'local';
+  /** Why the last save was refused (status "error"). */
+  lastError: string | null = null;
   private uploading: Promise<void> | null = null;
   private pendingLink: { device: AppState; account: Version } | null = null;
   private readonly listeners = new Set<(s: SyncStatus) => void>();
+  private readonly dataListeners = new Set<(s: AppState) => void>();
   private readonly now: () => Date;
 
   constructor(
@@ -74,17 +70,39 @@ export class Repository {
     return this.cloud !== null;
   }
 
+  /** Whether "Continue with Google" can work right now (configured, and Supabase answered at launch). */
+  get signInAvailable(): boolean {
+    return this.cloud !== null && this.cloudReachable;
+  }
+  private cloudReachable = true;
+
   onStatus(listener: (s: SyncStatus) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  private setStatus(status: SyncStatus): void {
+  /** Called when another device's changes were merged into the data while saving. */
+  onData(listener: (s: AppState) => void): () => void {
+    this.dataListeners.add(listener);
+    return () => this.dataListeners.delete(listener);
+  }
+
+  private setStatus(status: SyncStatus, error: string | null = null): void {
     this.status = status;
+    this.lastError = error;
     for (const l of this.listeners) l(status);
   }
 
-  /** Decides what to show on launch: the welcome screen, the app, or the "which data?" choice. */
+  /** Records a failed request: "offline" if the server couldn't be reached, else "error" with the reason. */
+  private failed(err: unknown): void {
+    if (isNetworkError(err)) this.setStatus('offline');
+    else this.setStatus('error', err instanceof Error ? err.message : String(err));
+  }
+
+  /**
+   * Decides what to show on launch: the app (signed in, or "without an account" chosen before),
+   * the "which data?" choice, or otherwise the landing page.
+   */
   async start(): Promise<StartResult> {
     if (this.cloud) {
       let user: CloudUser | null;
@@ -92,11 +110,12 @@ export class Repository {
         user = await this.cloud.currentUser();
       } catch {
         // Offline (or Supabase unreachable): keep the last signed-in user and their cached data.
+        this.cloudReachable = false;
         user = this.store.rememberedUser();
       }
       if (user) return this.enterCloud(user);
     }
-    if (!this.cloud || this.store.mode() === 'local') return { kind: 'ready', state: this.chooseLocal() };
+    if (this.store.mode() === 'local') return { kind: 'ready', state: this.chooseLocal() };
     return { kind: 'welcome' };
   }
 
@@ -139,7 +158,7 @@ export class Repository {
       return { kind: 'ready', state: this.chooseLocal() };
     }
     this.useCloudMode(user);
-    if (!account) return { kind: 'ready', state: await this.adoptDeviceData(device) };
+    if (!account) return { kind: 'ready', state: await this.adoptDeviceData(device, null) };
     this.pendingLink = { device, account };
     return { kind: 'link', device, account: account.state };
   }
@@ -149,15 +168,16 @@ export class Repository {
     const link = this.pendingLink;
     if (!link || !this.user) throw new Error('Nothing to resolve');
     this.pendingLink = null;
-    if (choice === 'device') return this.adoptDeviceData(link.device);
-    this.store.write({ user: this.user.id }, { ...link.account, dirty: false });
+    if (choice === 'device') return this.adoptDeviceData(link.device, link.account.updatedAt);
+    this.store.write({ user: this.user.id }, { ...link.account, dirty: false, base: link.account.updatedAt });
     this.store.remove('local');
     this.setStatus('synced');
     return link.account.state;
   }
 
-  private async adoptDeviceData(state: AppState): Promise<AppState> {
-    this.store.write({ user: this.user!.id }, { state, updatedAt: this.now().toISOString(), dirty: true });
+  /** Moves this device's no-account data into the account (replacing cloud version `base`, if any). */
+  private async adoptDeviceData(state: AppState, base: string | null): Promise<AppState> {
+    this.store.write({ user: this.user!.id }, { state, updatedAt: this.now().toISOString(), dirty: true, base });
     this.store.remove('local');
     await this.upload();
     return state;
@@ -167,10 +187,11 @@ export class Repository {
   save(state: AppState): void {
     const updatedAt = this.now().toISOString();
     if (this.mode === 'cloud' && this.user) {
-      this.store.write({ user: this.user.id }, { state, updatedAt, dirty: true });
+      const base = this.store.read({ user: this.user.id })?.base ?? null;
+      this.store.write({ user: this.user.id }, { state, updatedAt, dirty: true, base });
       void this.upload();
     } else {
-      this.store.write('local', { state, updatedAt, dirty: false });
+      this.store.write('local', { state, updatedAt, dirty: false, base: null });
     }
   }
 
@@ -184,19 +205,35 @@ export class Repository {
   private async runUpload(): Promise<void> {
     const { cloud, user } = this;
     if (!cloud || !user || this.mode !== 'cloud') return;
-    for (;;) {
-      const rec = this.store.read({ user: user.id });
+    const key = { user: user.id };
+    for (let conflicts = 0; ; ) {
+      const rec = this.store.read(key);
       if (!rec?.dirty) break;
       this.setStatus('saving');
+      let saved: boolean;
       try {
-        await cloud.save(user.id, rec.state, rec.updatedAt);
-      } catch {
-        this.setStatus('offline');
-        return;
+        saved = await cloud.save(user.id, rec.state, rec.updatedAt, rec.base);
+      } catch (err) {
+        return this.failed(err);
       }
-      // Only mark as uploaded if nothing changed while the upload was running.
-      const latest = this.store.read({ user: user.id });
-      if (latest?.updatedAt === rec.updatedAt) this.store.write({ user: user.id }, { ...latest, dirty: false });
+      const latest = this.store.read(key)!;
+      if (saved) {
+        // The cloud now holds rec; anything saved on the device meanwhile is still waiting.
+        this.store.write(key, { ...latest, dirty: latest.updatedAt !== rec.updatedAt, base: rec.updatedAt });
+        continue;
+      }
+      // Another device saved since our base version: merge its copy in and try again.
+      if (++conflicts > MAX_CONFLICT_RETRIES) return this.setStatus('error', 'Another device keeps saving at the same time. Your changes are kept and will be retried.');
+      let raw: CloudRecord | null;
+      try {
+        raw = await cloud.fetch(user.id);
+      } catch (err) {
+        return this.failed(err);
+      }
+      const remote = validVersion(raw);
+      const merged = remote ? mergeVersions(latest, remote) : latest.state;
+      this.store.write(key, { state: merged, updatedAt: this.now().toISOString(), dirty: true, base: raw?.updatedAt ?? null });
+      if (remote) for (const l of this.dataListeners) l(merged);
     }
     this.setStatus('synced');
   }
@@ -207,34 +244,48 @@ export class Repository {
   }
 
   /**
-   * Fetches the account's data. Returns it when the cloud copy is newer (the caller shows it);
-   * uploads the device copy when that is newer; returns null when there is nothing new.
+   * Checks the account for changes from other devices. Returns the data to show when it
+   * changed (the cloud copy, or this device's changes merged with it); null when nothing new.
+   * Waiting changes on this device are uploaded.
    */
   async pull(): Promise<AppState | null> {
     const { cloud, user } = this;
     if (!cloud || !user || this.mode !== 'cloud') return null;
-    let remote: Version | null;
+    const key = { user: user.id };
+    let raw: CloudRecord | null;
     try {
-      remote = validVersion(await cloud.fetch(user.id));
-    } catch {
-      this.setStatus('offline');
+      raw = await cloud.fetch(user.id);
+    } catch (err) {
+      this.failed(err);
       return null;
     }
-    const device = this.store.read({ user: user.id });
-    switch (decide(device, remote)) {
-      case 'use-cloud':
-        this.store.write({ user: user.id }, { ...remote!, dirty: false });
-        this.setStatus('synced');
-        return remote!.state;
-      case 'upload-device':
-        // The cloud copy is older, missing or unusable: send this device's copy.
-        if (device && !device.dirty) this.store.write({ user: user.id }, { ...device, dirty: true });
-        await this.upload();
-        return null;
-      default:
+    const remote = validVersion(raw);
+    const device = this.store.read(key);
+    if (!device) {
+      if (!remote) {
         this.setStatus('synced');
         return null;
+      }
+      this.store.write(key, { ...remote, dirty: false, base: remote.updatedAt });
+      this.setStatus('synced');
+      return remote.state;
     }
+    if (!remote || sameVersion(remote.updatedAt, device.base)) {
+      // Nobody else saved (or the cloud copy is missing/unusable): just send ours if needed.
+      if (!remote) this.store.write(key, { ...device, dirty: true, base: raw?.updatedAt ?? null });
+      await this.upload();
+      return null;
+    }
+    if (!device.dirty) {
+      this.store.write(key, { ...remote, dirty: false, base: remote.updatedAt });
+      this.setStatus('synced');
+      return remote.state;
+    }
+    // Both changed: keep everything from both sides, then upload the result.
+    const merged = mergeVersions(device, remote);
+    this.store.write(key, { state: merged, updatedAt: this.now().toISOString(), dirty: true, base: remote.updatedAt });
+    await this.upload();
+    return merged;
   }
 
   /** True when signed in and some changes haven't reached the cloud yet. */
@@ -259,6 +310,7 @@ export class Repository {
     }
     if (this.user) this.store.remove({ user: this.user.id });
     this.store.rememberUser(null);
+    this.store.clearDrafts();
     this.forget();
   }
 
@@ -271,7 +323,26 @@ export class Repository {
       return;
     }
     this.store.remove('local');
+    this.store.clearDrafts();
     this.forget();
+  }
+
+  /** An unsaved workout in progress for a plan day (or "free"), as stored by the log screen. */
+  draft(dayId: string): unknown {
+    return this.store.drafts()[dayId] ?? null;
+  }
+
+  hasDraft(dayId: string): boolean {
+    return this.draft(dayId) !== null;
+  }
+
+  /** Stores (or with null, discards) the unsaved workout for a day. Never throws. */
+  setDraft(dayId: string, draft: unknown | null): void {
+    try {
+      this.store.setDraft(dayId, draft);
+    } catch {
+      /* storage full: the draft just isn't kept */
+    }
   }
 
   private forget(): void {

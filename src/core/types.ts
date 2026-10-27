@@ -114,6 +114,8 @@ export interface AppState {
   routine: Routine;
   plan: PlanDay[];
   workouts: WorkoutLog[];
+  /** Ids of deleted workouts, so syncing with another device doesn't bring them back. */
+  deletedWorkoutIds: string[];
   bodyLogs: BodyLog[];
   settings: Settings;
 }

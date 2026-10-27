@@ -25,6 +25,10 @@ import {
 export const MAX_NAME = 60;
 export const MAX_NOTES = 1000;
 export const MAX_WORKOUTS = 5000;
+/** Heaviest weight a logged set can record (the log form uses the same limit). */
+export const MAX_WEIGHT_KG = 1000;
+/** How many deleted-workout ids are remembered for syncing. */
+export const MAX_DELETED_IDS = 2000;
 
 export function createDefaultState(now = new Date()): AppState {
   return {
@@ -42,6 +46,7 @@ export function createDefaultState(now = new Date()): AppState {
     },
     plan: [],
     workouts: [],
+    deletedWorkoutIds: [],
     bodyLogs: [],
     settings: { units: 'kg', animations: true },
   };
@@ -124,7 +129,7 @@ function loggedExercise(v: unknown): LoggedExercise | null {
     .filter(isObj)
     .map((s) => ({
       reps: Math.round(clampNumber(s.reps, 0, 1000, 0)),
-      weightKg: clampNumber(s.weightKg, 0, 1000, 0),
+      weightKg: clampNumber(s.weightKg, 0, MAX_WEIGHT_KG, 0),
     }));
   return { exerciseId: v.exerciseId, sets };
 }
@@ -191,6 +196,7 @@ export function sanitizeState(input: unknown): AppState {
       .slice(-MAX_WORKOUTS)
       .map(workoutLog)
       .filter((x): x is WorkoutLog => x !== null),
+    deletedWorkoutIds: [...new Set((Array.isArray(input.deletedWorkoutIds) ? input.deletedWorkoutIds : []).map(cleanId).filter((x): x is string => x !== null))].slice(-MAX_DELETED_IDS),
     bodyLogs: [...bodyLogsByDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
     settings: {
       units: oneOf(['kg', 'lb'] as const, settings.units, 'kg'),

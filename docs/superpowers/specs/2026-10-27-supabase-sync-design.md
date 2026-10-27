@@ -39,13 +39,23 @@ with Google lets the same plan, workouts and progress appear on every device.
 
 ## User experience
 
-**First screen** (no session and no local data): app name, one-line pitch, two buttons:
-"Continue with Google" and "Use without an account (this device only)". Choosing local mode
-is remembered; the screen does not show again.
+**Landing page** (no session and "use without an account" not chosen yet): headline, pitch,
+a still preview of the app, features and how it works, with two buttons: "Continue with
+Google" and "Use without an account". It always shows, even when sign-in can't work: if
+Supabase isn't configured, can't be reached at launch, or sign-in fails to start, the Google
+button is disabled with "Google sign-in is unavailable right now". Choosing local mode is
+remembered; the landing page does not show again.
 
 **Signed in**: the app as today. Saves go to the device immediately, then upload. A small,
-quiet status in Settings → Account says "Synced", "Saving…" or "Offline: changes will upload
-when you're back online". A toast appears when the device goes offline/online (already exists).
+quiet status in Settings → Account says "All changes saved to your account.", "Saving…",
+"Offline: changes will upload when you're back online." or, when the server refuses a save,
+"Couldn't save to your account: <reason>. Your changes are kept on this device and will be
+retried." A toast appears when the device goes offline/online.
+
+**Unfinished workouts**: the log form keeps the workout on the device as it is filled in and
+restores it when that day is opened again ("Picked up your unsaved workout", with "Discard and
+start over"). The Log page marks days with a workout in progress. Saving clears it; signing
+out or deleting data clears all.
 
 **Signing in after using local mode** (Settings → Account → "Sign in with Google to sync"):
 - Account has no saved data → this device's data is uploaded to the account.
@@ -59,10 +69,10 @@ when you're back online". A toast appears when the device goes offline/online (a
 - Backup becomes a plain JSON download / restore (no passphrase). Restore still goes through
   `sanitizeState()` and asks for confirmation.
 - **Delete my data**: signed in → deletes the user's row in Supabase and the device copy, then
-  signs out. Local mode → clears device data. Both return to the first screen.
+  signs out. Local mode → clears device data. Both return to the landing page.
 
 **Sign out** removes the device copy of the user's data (so the next person on a shared
-device sees nothing) and returns to the first screen. If changes are still waiting to upload,
+device sees nothing) and returns to the landing page. If changes are still waiting to upload,
 warn first: "Some changes haven't uploaded yet. Sign out anyway?"
 
 ## How it works (decided)
@@ -71,23 +81,29 @@ warn first: "Some changes haven't uploaded yet. Sign out anyway?"
   It is the app's only runtime dependency. Reading/writing data also goes through it.
 - **Config** (build time, public values): `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`
   (the `sb_publishable_…` key; safe in client code because RLS protects the data). If they are
-  not set, the app runs in local-only mode and hides Google sign-in (useful for forks/dev).
+  not set, the landing page still shows with Google sign-in disabled (useful for forks/dev).
   The GitHub Pages workflow reads them from repository **variables** (not secrets).
 - **Database** (`deploy/supabase/schema.sql`, replaces the vault table):
   `user_data (user_id uuid primary key default auth.uid() references auth.users on delete
   cascade, data jsonb not null, updated_at timestamptz not null)`, RLS on, select/insert/update/
   delete only where `auth.uid() = user_id`, plus a size limit on `data` (e.g. 5 MB).
 - **Data shape**: the existing `AppState` JSON, one row per user, plus an `updatedAt`
-  timestamp. Everything loaded from the cloud, the device or a backup goes through
+  timestamp. `AppState.deletedWorkoutIds` remembers deleted workouts so merging never brings
+  them back. Everything loaded from the cloud, the device or a backup goes through
   `sanitizeState()` as today.
 - **Device copy**: `localStorage`, unencrypted. Keys: local-mode data; per-user cached data
-  with `updatedAt` and a "needs upload" flag; the remembered mode. The theme key stays.
-- **Sync rule (last write wins)**: every change sets `updatedAt` and marks "needs upload".
-  An upload runs after each save and on the `online` event; a failed upload is retried on the
-  next save/online event. On app start (signed in): show the device copy immediately, then fetch
-  the cloud row; whichever has the newer `updatedAt` wins (newer cloud replaces the device copy
-  and re-renders, unless the user is mid-workout on the log page, in which case apply after
-  they save or leave the page; newer device copy is uploaded).
+  with `updatedAt`, a "needs upload" flag and `base` (the cloud version it was last synced
+  with); the remembered mode; unsaved workout drafts. The theme key stays.
+- **Sync rule (merge, never overwrite blindly)**: every change sets `updatedAt` and marks
+  "needs upload". An upload only replaces the cloud row if it is still the `base` version
+  (one conditional `UPDATE … WHERE updated_at = base`, or an `INSERT` when there is no row).
+  If another device saved in between, the device fetches that copy and merges
+  (`core/merge.ts`): workouts from both sides are kept except deleted ones, body-weight entries
+  are combined by date, and goal/profile/plan/settings come from the more recently saved copy.
+  Sync runs after each save, on the `online` event, at launch and whenever the app comes back
+  into view. Data that changes through sync re-renders the app, except mid-workout on the log
+  page, where it is applied after the workout is saved (the workout is added on top) or the
+  page is left. Network failures show "offline"; refusals show the server's reason.
 - **OAuth redirect**: back to the site's own URL (origin + base path, e.g.
   `https://akchy.github.io/Gym-Exercises/`). Works with the hash router because the PKCE code
   arrives in the query string.
@@ -115,10 +131,11 @@ warn first: "Some changes haven't uploaded yet. Sign out anyway?"
 
 ## Testing
 
-- Unit tests with a fake Supabase client: sign-in/out, first-screen choice, sync decisions
-  (newer side wins, offline queue, retry on reconnect), sign-in-later with empty/non-empty
-  account, delete, sign-out warning, data validation of cloud rows.
-- E2E (no real Google): local mode end to end, offline logging, first screen, settings
+- Unit tests with a fake Supabase client: sign-in/out, landing page choices, two-device
+  conflicts (stale device, both offline, deletions), merge rules, offline vs refused saves,
+  sign-in-later with empty/non-empty account, delete, sign-out warning, drafts, data
+  validation of cloud rows.
+- E2E (no real Google): local mode end to end, offline logging, landing page, settings
   without lock UI. The signed-in path is covered by unit tests.
 
 ## Left to the builder
@@ -128,16 +145,15 @@ timing details, and test structure, within the decisions above.
 
 ## Builder's calls (made while writing this, check them)
 
-- No real-time updates between open devices (sync on load/reconnect/save only).
+- No real-time updates between open devices (sync on load, reconnect, save and return to the app).
 - Mid-workout protection: a newer cloud copy waits until the workout is saved or the log
   page is left.
 - Sign out clears the device copy and warns if changes haven't uploaded.
-- Missing Supabase config → local-only mode with Google sign-in hidden.
+- Missing or unreachable Supabase → landing page with Google sign-in disabled.
 - Static header files drop their CSP (kept only in the build-generated meta tag), except
   `frame-ancestors`.
 - Plain JSON backup/restore replaces encrypted backups.
 - Self-hosted HTTP storage backend option is removed.
-- Without Supabase config the first screen is skipped entirely (local mode is the only option).
-- `updated_at` is written by the client (the device's save time), not by a database trigger,
-  so "newest wins" compares the times the user actually made the changes. Small clock
-  differences between devices are accepted.
+- `updated_at` is written by the client (the device's save time), not by a database trigger.
+  It identifies versions for the conditional upload, and decides which copy's plan and
+  settings win in a merge. Small clock differences between devices only affect that choice.

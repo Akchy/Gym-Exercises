@@ -7,7 +7,7 @@ describe('DeviceStore', () => {
   it('round-trips records under readable keys', () => {
     localStorage.clear();
     const store = new DeviceStore(localStorage);
-    const record = { state: onboardedState(), updatedAt: '2026-10-27T10:00:00.000Z', dirty: true };
+    const record = { state: onboardedState(), updatedAt: '2026-10-27T10:00:00.000Z', dirty: true, base: '2026-10-27T09:00:00.000Z' };
     store.write('local', record);
     store.write({ user: 'u1' }, { ...record, dirty: false });
     expect(Object.keys(localStorage).sort()).toEqual(['gymx:cache:u1', 'gymx:local']);
@@ -15,6 +15,30 @@ describe('DeviceStore', () => {
     expect(store.read({ user: 'u1' })?.dirty).toBe(false);
     store.remove('local');
     expect(store.read('local')).toBeNull();
+  });
+
+  it('reads records saved before the sync base was tracked', () => {
+    localStorage.clear();
+    localStorage.setItem('gymx:cache:u1', JSON.stringify({ state: onboardedState(), updatedAt: '2026-10-27T10:00:00.000Z', dirty: false }));
+    expect(new DeviceStore(localStorage).read({ user: 'u1' })?.base).toBeNull();
+  });
+
+  it('keeps unsaved workout drafts per day and clears them', () => {
+    localStorage.clear();
+    const store = new DeviceStore(localStorage);
+    expect(store.drafts()).toEqual({});
+    store.setDraft('day-1', { a: 1 });
+    store.setDraft('free', { b: 2 });
+    expect(store.drafts()).toEqual({ 'day-1': { a: 1 }, free: { b: 2 } });
+    store.setDraft('day-1', null);
+    expect(store.drafts()).toEqual({ free: { b: 2 } });
+    store.setDraft('free', null);
+    expect(localStorage.getItem('gymx:drafts')).toBeNull();
+    store.setDraft('x', { c: 3 });
+    store.clearDrafts();
+    expect(store.drafts()).toEqual({});
+    localStorage.setItem('gymx:drafts', '[1,2]');
+    expect(store.drafts()).toEqual({});
   });
 
   it('returns null for missing, corrupt or invalid records', () => {

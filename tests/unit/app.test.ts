@@ -22,8 +22,13 @@ function newerInCloud(cloud: FakeCloud, name: string) {
 }
 
 describe('App: first run', () => {
-  it('without sign-in configured goes straight to setup and saves on the device', async () => {
+  it('without sign-in configured still shows the landing page, then sets up on the device', async () => {
     const { app, root, store } = await makeApp();
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
+    expect(byText<HTMLButtonElement>(root, 'button', 'Continue with Google').disabled).toBe(true);
+    expect(root.textContent).toContain('Google sign-in is unavailable right now.');
+    byText(root, 'button', 'Use without an account').click();
+    await settle(app);
     expect(window.location.hash).toBe('#/onboarding');
     expect(root.querySelector('h2')?.textContent).toMatch(/achieve/);
     expect(root.querySelector('input[type="password"]')).toBeNull();
@@ -107,7 +112,7 @@ describe('App: first run', () => {
   it('with sign-in configured offers Google or no account', async () => {
     const cloud = new FakeCloud();
     const { app, root, store } = await makeApp(undefined, { cloud });
-    expect(root.querySelector('h1')?.textContent).toBe('Free gym coach. No subscription.');
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
     const google = byText<HTMLButtonElement>(root, 'button', 'Continue with Google');
     google.click();
     await settle(app);
@@ -125,9 +130,31 @@ describe('App: first run', () => {
       throw new Error('popup blocked');
     };
     const { app, root } = await makeApp(undefined, { cloud });
-    byText(root, 'button', 'Continue with Google').click();
+    const google = byText<HTMLButtonElement>(root, 'button', 'Continue with Google');
+    google.click();
     await settle(app);
-    expect(root.querySelector('.toast')?.textContent).toBe('Could not start sign-in: popup blocked');
+    expect(google.textContent).toBe('Continue with Google');
+    expect(google.disabled).toBe(true);
+    expect(root.textContent).toContain('Google sign-in is unavailable right now.');
+    byText(root, 'button', 'Use without an account').click();
+    await settle(app);
+    expect(window.location.hash).toBe('#/onboarding');
+  });
+
+  it('keeps the landing page with Google disabled when Supabase cannot be reached', async () => {
+    const cloud = new FakeCloud();
+    cloud.offline = true;
+    const { root } = await makeApp(undefined, { cloud });
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
+    expect(byText<HTMLButtonElement>(root, 'button', 'Continue with Google').disabled).toBe(true);
+    expect(byText<HTMLButtonElement>(root, 'button', 'Use without an account').disabled).toBe(false);
+  });
+
+  it('shows a still preview, not an animation', async () => {
+    const { root } = await makeApp();
+    expect(root.querySelector('.preview')).not.toBeNull();
+    expect(root.querySelectorAll('.preview-list li')).toHaveLength(3);
+    expect(root.querySelector('.demo.animated, animate, svg animate')).toBeNull();
   });
 });
 
@@ -258,6 +285,94 @@ describe('App: signed in with Google', () => {
     window.dispatchEvent(new Event('online'));
     await settle(app);
     expect(root.querySelector('h1')?.textContent).toBe('Hi, Phone edit');
+  });
+
+  it('does not overwrite newer data from another device with older offline changes', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    cloud.offline = true;
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true); // offline edit, waits to upload
+    await settle(app);
+    newerInCloud(cloud, 'Phone edit'); // another device saves later
+    cloud.offline = false;
+    window.dispatchEvent(new Event('online'));
+    await settle(app, 12);
+    expect((cloud.rows.get(ALEX.id)?.data as AppState).profile.name).toBe('Phone edit');
+    expect(app.currentState!.profile.name).toBe('Phone edit');
+  });
+
+  it('shows the reason when the account refuses a save', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    cloud.reject = 'permission denied for table user_data';
+    check(root.querySelector<HTMLInputElement>('#animations')!, false);
+    await settle(app);
+    expect(root.querySelector('[data-sync-status]')?.textContent).toBe(
+      "Couldn't save to your account: permission denied for table user_data. Your changes are kept on this device and will be retried.",
+    );
+  });
+
+  it('picks up changes from other devices when the app comes back into view', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    newerInCloud(cloud, 'Phone edit');
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await settle(app);
+    expect(root.querySelector('h1')?.textContent).toBe('Hi, Phone edit');
+  });
+
+  it("merges another device's workout when this device saves", async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    const other = onboardedState();
+    other.workouts = [{ id: 'phone-1', date: '2026-10-26', dayId: null, entries: [{ exerciseId: 'push-up', sets: [{ reps: 10, weightKg: 0 }] }], durationMin: null, notes: '' }];
+    cloud.rows.set(ALEX.id, { data: other, updatedAt: new Date(NOW.getTime() + 500).toISOString() }); // phone saved just before this device's change
+    await go(app, '/settings');
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true); // this device never saw the phone's workout
+    await settle(app, 12);
+    const saved = cloud.rows.get(ALEX.id)!.data as AppState;
+    expect(saved.workouts.map((w) => w.id)).toEqual(['phone-1']);
+    expect(saved.settings.units).toBe('lb');
+    expect(app.currentState!.workouts.map((w) => w.id)).toEqual(['phone-1']);
+  });
+
+  it('uploads offline changes on reconnect when they are the newest', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    cloud.offline = true;
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
+    await settle(app);
+    cloud.offline = false;
+    window.dispatchEvent(new Event('online'));
+    await settle(app, 12);
+    expect((cloud.rows.get(ALEX.id)?.data as AppState).settings.units).toBe('lb');
+  });
+
+  it('restores a backup into the account, and refuses while offline', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    const backup = onboardedState();
+    backup.profile.name = 'Restored';
+    const fileInput = root.querySelector<HTMLInputElement>('#import-file')!;
+    Object.defineProperty(fileInput, 'files', { value: [new File([JSON.stringify(backup)], 'b.json')], configurable: true });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    fileInput.form!.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle(app);
+    expect(root.textContent).toContain('Connect to the internet to restore a backup to your account.');
+    expect(app.currentState!.profile.name).toBe('Alex');
+
+    onLine.mockReturnValue(true);
+    fileInput.form!.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle(app, 12);
+    expect(confirmSpy).toHaveBeenLastCalledWith('Restoring replaces all your current data, in your account and on every signed-in device. Continue?');
+    expect(app.currentState!.profile.name).toBe('Restored');
+    expect((cloud.rows.get(ALEX.id)?.data as AppState).profile.name).toBe('Restored');
   });
 
   it('holds back synced data during a workout, then saves the workout on top of it', async () => {

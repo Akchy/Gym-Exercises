@@ -127,7 +127,11 @@ export function renderProgress(ctx: ViewContext): HTMLElement {
         ? h('ul', { class: 'history' }, ...history.map((w) => {
             const del = h('button', { type: 'button', class: 'icon danger', 'aria-label': `Delete workout from ${w.date}` }, '✕');
             del.addEventListener('click', () => {
-              if (confirm(`Delete the workout from ${w.date}?`)) void ctx.update((s) => (s.workouts = s.workouts.filter((x) => x.id !== w.id)));
+              if (!confirm(`Delete the workout from ${w.date}?`)) return;
+              void ctx.update((s) => {
+                s.workouts = s.workouts.filter((x) => x.id !== w.id);
+                s.deletedWorkoutIds.push(w.id); // so another device's copy doesn't bring it back
+              });
             });
             const dayName = state.plan.find((d) => d.id === w.dayId)?.name ?? 'Workout';
             return h('li', {}, h('span', {}, h('strong', {}, w.date), ` · ${dayName} · ${w.entries.length} exercises · ${formatWeight(workoutVolume(w), units)}`), del);

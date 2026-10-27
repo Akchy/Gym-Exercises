@@ -51,6 +51,7 @@ export class App {
   private themeBtn: HTMLButtonElement | null = null;
   private header: HTMLElement | null = null;
   private readonly stopStatus: () => void;
+  private readonly stopData: () => void;
 
   constructor(
     private readonly root: HTMLElement,
@@ -67,10 +68,13 @@ export class App {
     this.win.addEventListener('online', this.onOnline);
     this.win.addEventListener(THEME_EVENT, this.syncThemeButton);
     this.win.addEventListener('click', this.onOutsideClick);
+    this.win.document.addEventListener('visibilitychange', this.onVisible);
     // The sync status in Settings updates in place, without re-rendering the page.
     this.stopStatus = repo.onStatus((s) => {
-      for (const el of this.root.querySelectorAll('[data-sync-status]')) el.textContent = syncStatusText(s);
+      for (const el of this.root.querySelectorAll('[data-sync-status]')) el.textContent = syncStatusText(s, repo.lastError);
     });
+    // Another device's changes merged in while saving: show them.
+    this.stopData = repo.onData((s) => void this.applyRemote(s));
   }
 
   private readonly onHashChange = () => {
@@ -84,6 +88,10 @@ export class App {
   private readonly onOnline = () => {
     this.toast('Back online.');
     void this.syncNow();
+  };
+  /** Coming back to the app (tab or phone app): pick up changes made on other devices meanwhile. */
+  private readonly onVisible = () => {
+    if (this.win.document.visibilityState === 'visible') void this.syncNow();
   };
   /** Mobile menu: a tap anywhere outside the header closes it. */
   private readonly onOutsideClick = (ev: Event) => {
@@ -114,7 +122,9 @@ export class App {
     this.win.removeEventListener('online', this.onOnline);
     this.win.removeEventListener(THEME_EVENT, this.syncThemeButton);
     this.win.removeEventListener('click', this.onOutsideClick);
+    this.win.document.removeEventListener('visibilitychange', this.onVisible);
     this.stopStatus();
+    this.stopData();
   }
 
   get currentState(): AppState | null {
@@ -131,16 +141,24 @@ export class App {
     if (result.kind === 'ready' && this.repo.mode === 'cloud') void this.syncNow();
   }
 
-  /** Uploads waiting changes, then shows newer data from another device if there is any. */
+  /**
+   * Checks the account for changes from other devices (merging them with this device's
+   * waiting changes) and uploads what is waiting. See Repository.pull.
+   */
   private async syncNow(): Promise<void> {
-    await this.repo.upload();
+    if (this.repo.mode !== 'cloud' || !this.state) return;
     const newer = await this.repo.pull();
-    if (!newer || !this.state) return;
+    if (newer) await this.applyRemote(newer);
+  }
+
+  /** Shows data that changed through syncing, but never swaps it in mid-workout. */
+  private async applyRemote(next: AppState): Promise<void> {
+    if (!this.state) return;
     if (this.onLogForm()) {
-      this.pendingRemote = newer;
+      this.pendingRemote = next;
       return;
     }
-    this.state = newer;
+    this.state = next;
     await this.render();
   }
 
@@ -177,10 +195,9 @@ export class App {
     }
   }
 
-  /** Back to the first screen after signing out or deleting everything. */
+  /** Back to the landing page after signing out or deleting everything. */
   private async reset(): Promise<void> {
-    // Without sign-in there is no first screen: start over on this device (setup wizard).
-    this.state = this.repo.cloudEnabled ? null : this.repo.chooseLocal();
+    this.state = null;
     this.pendingRemote = null;
     this.win.location.hash = '/';
     await this.render();
@@ -271,8 +288,8 @@ export class App {
       });
     }
     return renderWelcome({
-      cloudEnabled: this.repo.cloudEnabled,
-      onGoogle: () => this.repo.signIn().catch((err: Error) => this.toast(`Could not start sign-in: ${err.message}`)),
+      signInAvailable: this.repo.signInAvailable,
+      onGoogle: () => this.repo.signIn(),
       onLocal: () => {
         this.state = this.repo.chooseLocal();
         this.navigate('/onboarding');
