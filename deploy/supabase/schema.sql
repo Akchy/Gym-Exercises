@@ -1,20 +1,23 @@
--- Optional cloud sync on Supabase. The app only ever sends AES-256-GCM ciphertext,
--- so even the database owner cannot read users' data.
-create table if not exists public.vault_items (
-  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
-  key text not null check (key ~ '^[A-Za-z0-9_.-]{1,64}$'),
-  value text not null check (length(value) < 10485760),
-  updated_at timestamptz not null default now(),
-  primary key (user_id, key)
+-- GymFree cloud save: one row per signed-in user holding their whole app data as JSON.
+-- Run once in Supabase -> SQL editor. Safe to re-run.
+--
+-- Row Level Security: each user can only read and write their own row. The project owner
+-- (you, in the Supabase dashboard) can read all rows.
+create table if not exists public.user_data (
+  user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
+  data jsonb not null check (pg_column_size(data) < 5 * 1024 * 1024),
+  -- When the user made this version (set by the app, used for "newest wins" between devices).
+  updated_at timestamptz not null
 );
 
-alter table public.vault_items enable row level security;
+alter table public.user_data enable row level security;
 
-create policy "own rows: select" on public.vault_items for select using (auth.uid() = user_id);
-create policy "own rows: insert" on public.vault_items for insert with check (auth.uid() = user_id);
-create policy "own rows: update" on public.vault_items for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "own rows: delete" on public.vault_items for delete using (auth.uid() = user_id);
+drop policy if exists "own row: select" on public.user_data;
+drop policy if exists "own row: insert" on public.user_data;
+drop policy if exists "own row: update" on public.user_data;
+drop policy if exists "own row: delete" on public.user_data;
 
-create or replace function public.touch_vault_items() returns trigger language plpgsql as $$
-begin new.updated_at = now(); return new; end $$;
-create trigger vault_items_touch before update on public.vault_items for each row execute function public.touch_vault_items();
+create policy "own row: select" on public.user_data for select to authenticated using (auth.uid() = user_id);
+create policy "own row: insert" on public.user_data for insert to authenticated with check (auth.uid() = user_id);
+create policy "own row: update" on public.user_data for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own row: delete" on public.user_data for delete to authenticated using (auth.uid() = user_id);

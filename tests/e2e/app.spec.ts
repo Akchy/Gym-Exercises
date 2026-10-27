@@ -1,13 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
+import { basePath } from '../../vite.config';
 
-const PASS = 'correct horse battery 42';
+/** First screen or setup, depending on whether the build has Supabase settings. */
+const FIRST_SCREEN = /Let's set you up|Free gym coach/;
 
-async function createVault(page: Page) {
-  await page.goto('/');
-  await page.getByLabel('Choose a passphrase').fill(PASS);
-  await page.getByLabel('Repeat passphrase').fill(PASS);
-  await page.getByLabel(/cannot be recovered/).check();
-  await page.getByRole('button', { name: 'Create my private space' }).click();
+/** Opens the app on a fresh device and starts without an account (works with or without Supabase settings). */
+async function start(page: Page) {
+  await page.goto('./');
+  await expect(page.getByRole('heading', { name: FIRST_SCREEN })).toBeVisible();
+  const local = page.getByRole('button', { name: 'Use without an account' });
+  if (await local.isVisible()) await local.click();
   await expect(page.getByRole('heading', { name: "Let's set you up" })).toBeVisible();
 }
 
@@ -41,38 +43,31 @@ async function onboard(page: Page) {
 }
 
 test.describe('GymFree end-to-end', () => {
-  test('first run: create vault, onboard, and data is encrypted at rest', async ({ page }) => {
+  test('first run without an account: onboard and keep the data on this device', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (m) => m.type() === 'error' && consoleErrors.push(m.text()));
-    await createVault(page);
+    await start(page);
+    await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await onboard(page);
 
-    const stored = await page.evaluate(() => localStorage.getItem('gymx:vault'));
-    expect(stored).toBeTruthy();
-    const envelope = JSON.parse(stored!);
-    expect(envelope).toMatchObject({ v: 1, kdf: 'PBKDF2-SHA256', iter: 600000 });
-    expect(stored).not.toContain('Riley');
-    expect(stored).not.toContain('gain-muscle');
-    expect(await page.evaluate(() => Object.keys(localStorage))).toEqual(['gymx:vault']);
+    const stored = JSON.parse((await page.evaluate(() => localStorage.getItem('gymx:local')))!);
+    expect(stored.state).toMatchObject({ goal: 'gain-muscle', profile: { name: 'Riley' } });
+    expect(await page.evaluate(() => localStorage.getItem('gymx:mode'))).toBe('"local"');
     expect(consoleErrors).toEqual([]);
   });
 
-  test('persists across reloads and requires the passphrase', async ({ page }) => {
-    await createVault(page);
+  test('opens straight into the app after a reload (no lock)', async ({ page }) => {
+    await start(page);
     await onboard(page);
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
-    await expect(page.getByText('Riley')).toHaveCount(0);
-    await page.getByLabel('Passphrase').fill('not the passphrase');
-    await page.getByRole('button', { name: 'Unlock' }).click();
-    await expect(page.getByRole('alert')).toHaveText('Wrong passphrase.');
-    await page.getByLabel('Passphrase').fill(PASS);
-    await page.getByRole('button', { name: 'Unlock' }).click();
     await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
+    await page.goto('./#/settings');
+    await expect(page.getByText(/passphrase|Lock now/i)).toHaveCount(0);
+    await expect(page.getByText('Your data is stored on this device only.')).toBeVisible();
   });
 
   test('fixed plan: learn an exercise in place and come back to the plan', async ({ page }) => {
-    await createVault(page);
+    await start(page);
     await onboard(page);
     await (await mainNav(page)).getByRole('link', { name: 'Plan' }).click();
     await expect(page.getByRole('heading', { name: 'My weekly plan' })).toBeVisible();
@@ -100,9 +95,9 @@ test.describe('GymFree end-to-end', () => {
   });
 
   test('edit the plan only when asked, then log a workout set by set', async ({ page }) => {
-    await createVault(page);
+    await start(page);
     await onboard(page);
-    await page.goto('/#/plan');
+    await page.goto('./#/plan');
     await page.getByRole('link', { name: 'Edit plan' }).click();
     await expect(page.getByRole('heading', { name: 'Edit your plan' })).toBeVisible();
     const firstDay = page.locator('.plan-day').first();
@@ -154,7 +149,7 @@ test.describe('GymFree end-to-end', () => {
   });
 
   test('controls follow the app theme (no stock dropdowns in setup)', async ({ page }) => {
-    await createVault(page);
+    await start(page);
     await expect(page.locator('select')).toHaveCount(0);
     await page.getByText('Build muscle').click();
     await page.getByRole('button', { name: 'Next' }).click();
@@ -165,7 +160,7 @@ test.describe('GymFree end-to-end', () => {
     // Remaining selects elsewhere are restyled, not native
     for (let i = 0; i < 2; i++) await page.getByRole('button', { name: 'Next' }).click();
     await page.getByRole('button', { name: 'Save my plan' }).click();
-    await page.goto('/#/exercises');
+    await page.goto('./#/exercises');
     const appearance = await page.getByLabel('Muscle group').evaluate((el) => getComputedStyle(el).appearance);
     expect(['none', 'base-select']).toContain(appearance);
     const cb = await page.locator('#only-mine').evaluate((el) => getComputedStyle(el).appearance);
@@ -173,7 +168,7 @@ test.describe('GymFree end-to-end', () => {
   });
 
   test('exercise library shows animations and still images', async ({ page }) => {
-    await createVault(page);
+    await start(page);
     await onboard(page);
     await (await mainNav(page)).getByRole('link', { name: 'Exercises' }).click();
     await page.getByLabel('Muscle group').selectOption('legs');
@@ -196,68 +191,52 @@ test.describe('GymFree end-to-end', () => {
     await expect(demo.getByText('1. Start')).toBeVisible();
 
     // Exercises without photos fall back to the stick-figure animation
-    await page.goto('/#/exercises/burpee');
+    await page.goto('./#/exercises/burpee');
     await expect(page.locator('.demo-large svg')).toHaveAttribute('aria-label', /animation/);
   });
 
   test('reduced motion users get still images', async ({ browser }) => {
     const context = await browser.newContext({ reducedMotion: 'reduce' });
     const page = await context.newPage();
-    await createVault(page);
+    await start(page);
     await onboard(page);
-    await page.goto('/#/exercises/push-up');
+    await page.goto('./#/exercises/push-up');
     await expect(page.locator('.demo-large .demo')).toHaveAttribute('aria-label', /start and end position/);
     await context.close();
   });
 
-  test('settings: change passphrase, backup round-trip and delete data', async ({ page }) => {
-    await createVault(page);
+  test('settings: backup round-trip and delete data', async ({ page }) => {
+    await start(page);
     await onboard(page);
     await (await mainNav(page)).getByRole('link', { name: 'Settings' }).click();
 
-    await page.getByLabel('Current passphrase').fill(PASS);
-    await page.getByLabel('New passphrase', { exact: true }).fill('another long passphrase');
-    await page.getByLabel('Repeat new passphrase').fill('another long passphrase');
-    await page.getByRole('button', { name: 'Change passphrase' }).click();
-    await expect(page.getByText('Passphrase changed.')).toBeVisible();
-
     const downloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Download encrypted backup' }).click();
+    await page.getByRole('button', { name: 'Download backup' }).click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toMatch(/^gym-backup-\d{4}-\d{2}-\d{2}\.encrypted\.json$/);
+    expect(download.suggestedFilename()).toMatch(/^gym-backup-\d{4}-\d{2}-\d{2}\.json$/);
     const backupPath = await download.path();
 
     page.on('dialog', (d) => d.accept());
     await page.getByLabel('Type DELETE to confirm').fill('DELETE');
     await page.getByRole('button', { name: 'Delete all my data' }).click();
-    await expect(page.getByRole('heading', { name: /No sign-up/ })).toBeVisible();
-    expect(await page.evaluate(() => localStorage.length)).toBe(0);
+    await expect(page.getByRole('heading', { name: FIRST_SCREEN })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('gymx:local'))).toBeNull();
 
-    // Restore the backup onto the now-empty device from the welcome screen
-    await page.getByText('Moving from another device?').click();
-    await page.getByLabel('Encrypted backup file').setInputFiles(backupPath);
-    await page.getByLabel('Passphrase of that backup').fill(PASS);
-    await page.getByRole('button', { name: 'Restore backup' }).click();
-    await expect(page.getByRole('alert').last()).toHaveText('Wrong passphrase for this backup.');
-    await page.getByLabel('Passphrase of that backup').fill('another long passphrase');
-    await page.getByRole('button', { name: 'Restore backup' }).click();
-    await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
-
-    // Restoring from settings also works (replaces current data)
-    await page.goto('/#/settings');
+    // Start over, then restore the backup from settings (replaces current data)
+    await start(page);
+    await page.getByText('Build muscle').click();
+    for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Next' }).click();
+    await page.getByRole('button', { name: 'Save my plan' }).click();
+    await page.goto('./#/settings');
     await page.getByLabel('Backup file').setInputFiles(backupPath);
-    await page.getByLabel('Passphrase used for that backup').fill('another long passphrase');
     await page.getByRole('button', { name: 'Restore backup' }).click();
     await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
-
     await page.reload();
-    await page.getByLabel('Passphrase').fill('another long passphrase');
-    await page.getByRole('button', { name: 'Unlock' }).click();
     await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
   });
 
   test('header fits the screen: no sideways scrolling, menu reachable', async ({ page }) => {
-    await createVault(page);
+    await start(page);
     await onboard(page);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
@@ -267,17 +246,8 @@ test.describe('GymFree end-to-end', () => {
     await expect(page.getByRole('heading', { name: 'Progress', exact: true })).toBeVisible();
   });
 
-  test('locks on demand', async ({ page }) => {
-    await createVault(page);
-    await onboard(page);
-    await page.goto('/#/settings');
-    await page.getByRole('button', { name: 'Lock now' }).click();
-    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
-    await expect(page.getByText('Riley')).toHaveCount(0);
-  });
-
   test('installable and works fully offline after the first visit', async ({ page, context }) => {
-    await page.goto('/');
+    await page.goto('./');
     const manifestHref = await page.locator('link[rel="manifest"]').getAttribute('href');
     const manifest = await (await page.request.get(manifestHref!)).json();
     expect(manifest).toMatchObject({ short_name: 'GymFree', display: 'standalone', start_url: './' });
@@ -294,22 +264,20 @@ test.describe('GymFree end-to-end', () => {
       const cache = await caches.open(keys.find((k) => k.startsWith('gymfree-'))!);
       return (await cache.keys()).map((r) => new URL(r.url).pathname);
     });
-    expect(cached).toEqual(expect.arrayContaining(['/', '/index.html', '/manifest.webmanifest', '/exercises/push-up-0.webp']));
+    const base = basePath();
+    expect(cached).toEqual(expect.arrayContaining([base, `${base}index.html`, `${base}manifest.webmanifest`, `${base}exercises/push-up-0.webp`]));
 
-    await createVault(page);
+    await start(page);
     await onboard(page);
 
     await context.setOffline(true);
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
-    await page.getByLabel('Passphrase').fill(PASS);
-    await page.getByRole('button', { name: 'Unlock' }).click();
     await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
-    await page.goto('/#/exercises/goblet-squat');
+    await page.goto('./#/exercises/goblet-squat');
     const photo = page.locator('.demo-large img').first();
     await expect(photo).toBeVisible();
     await expect.poll(() => photo.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBeGreaterThan(0);
-    await page.goto('/#/settings');
+    await page.goto('./#/settings');
     await expect(page.getByRole('heading', { name: 'Install & offline' })).toBeVisible();
     await context.setOffline(false);
   });
@@ -319,11 +287,11 @@ test.describe('GymFree end-to-end', () => {
     page.on('request', (r) => {
       if (!r.url().startsWith('http://localhost:4173')) external.push(r.url());
     });
-    await page.goto('/');
+    await page.goto('./');
     const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("object-src 'none'");
-    await expect(page.getByRole('heading', { name: /No sign-up/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: FIRST_SCREEN })).toBeVisible();
     expect(external).toEqual([]);
   });
 });

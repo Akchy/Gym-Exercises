@@ -1,16 +1,26 @@
-import { checkPassphrase } from '../../core/passphrase';
-import { DecryptionError } from '../../core/crypto';
 import { sanitizeState } from '../../core/state';
-import type { AppState } from '../../core/types';
+import type { SyncStatus } from '../../core/sync';
 import type { ViewContext } from '../context';
-import { choiceGroup, field, h, select } from '../dom';
+import { choiceGroup, field, h } from '../dom';
 import { getTheme, setTheme } from '../theme';
-import { MAX_BACKUP_BYTES } from './lock';
 
-export { MAX_BACKUP_BYTES };
+export const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 
 export function backupFileName(today: string): string {
-  return `gym-backup-${today}.encrypted.json`;
+  return `gym-backup-${today}.json`;
+}
+
+export function syncStatusText(status: SyncStatus): string {
+  switch (status) {
+    case 'synced':
+      return 'All changes saved to your account.';
+    case 'saving':
+      return 'Saving…';
+    case 'offline':
+      return "Offline: changes will upload when you're back online.";
+    default:
+      return 'Your data is stored on this device only.';
+  }
 }
 
 function download(name: string, content: string) {
@@ -22,7 +32,92 @@ function download(name: string, content: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function renderSettings(ctx: ViewContext): HTMLElement {
+function accountCard(ctx: ViewContext): HTMLElement {
+  const { repo } = ctx;
+  const status = h('p', { class: 'muted', 'data-sync-status': '' }, syncStatusText(repo.status));
+  if (repo.mode === 'cloud' && repo.user) {
+    const signOut = h('button', { type: 'button', class: 'secondary' }, 'Sign out');
+    signOut.addEventListener('click', async () => {
+      if (repo.hasPendingChanges() && !confirm("Some changes haven't uploaded yet. Sign out anyway?")) return;
+      await ctx.signOut();
+    });
+    return h('section', { class: 'card' }, h('h2', {}, 'Account'), h('p', {}, 'Signed in as ', h('strong', {}, repo.user.email ?? 'your Google account')), status, signOut);
+  }
+  const signIn = h('button', { type: 'button', class: 'primary' }, 'Sign in with Google to sync');
+  signIn.addEventListener('click', () => ctx.signIn().catch((err: Error) => ctx.toast(`Could not start sign-in: ${err.message}`)));
+  return h(
+    'section',
+    { class: 'card' },
+    h('h2', {}, 'Account'),
+    status,
+    repo.cloudEnabled ? h('p', { class: 'muted' }, 'Sign in to see the same plan and progress on your phone and computer. Your data here moves into your account.') : null,
+    repo.cloudEnabled ? signIn : null,
+  );
+}
+
+function backupCard(ctx: ViewContext): HTMLElement {
+  const exportBtn = h('button', { type: 'button', class: 'secondary' }, 'Download backup');
+  exportBtn.addEventListener('click', () => download(backupFileName(ctx.today()), JSON.stringify(ctx.state, null, 2)));
+  const file = h('input', { type: 'file', id: 'import-file', accept: 'application/json,.json' });
+  const importMsg = h('p', { class: 'error', role: 'alert' });
+  const importForm = h('form', {}, field('Backup file', file), importMsg, h('button', { type: 'submit', class: 'secondary' }, 'Restore backup'));
+  importForm.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    importMsg.textContent = '';
+    const f = file.files?.[0];
+    if (!f) return void (importMsg.textContent = 'Choose a backup file.');
+    if (f.size > MAX_BACKUP_BYTES) return void (importMsg.textContent = 'That file is too large to be a backup.');
+    let data;
+    try {
+      data = sanitizeState(JSON.parse(await f.text()));
+    } catch {
+      return void (importMsg.textContent = 'That file is not a GymFree backup.');
+    }
+    if (!confirm('Restoring replaces all your current data. Continue?')) return;
+    await ctx.replaceState(data);
+    ctx.toast('Backup restored.');
+  });
+  return h('section', { class: 'card' }, h('h2', {}, 'Backup & restore'), h('p', { class: 'muted' }, 'Download a copy of your data as a file, or restore one.'), exportBtn, importForm);
+}
+
+function deleteCard(ctx: ViewContext): HTMLElement {
+  const confirmInput = h('input', { type: 'text', id: 'delete-confirm', autocomplete: 'off' });
+  const delBtn = h('button', { type: 'button', class: 'danger' }, 'Delete all my data');
+  delBtn.addEventListener('click', async () => {
+    if (confirmInput.value !== 'DELETE') {
+      confirmInput.focus();
+      return ctx.toast('Type DELETE to confirm.');
+    }
+    try {
+      await ctx.destroy();
+    } catch {
+      ctx.toast('Could not delete your account data. Check your connection and try again.');
+    }
+  });
+  const where = ctx.repo.mode === 'cloud' ? 'from your account and this device' : 'from this device';
+  return h('section', { class: 'card danger-zone' }, h('h2', {}, 'Delete data'), h('p', {}, `Permanently erase your plan, workouts and settings ${where}.`), field('Type DELETE to confirm', confirmInput), delBtn);
+}
+
+function installCard(ctx: ViewContext): HTMLElement {
+  const install = ctx.install;
+  let body: HTMLElement;
+  if (install?.isStandalone || install?.installed) {
+    body = h('p', {}, '✓ Installed. GymFree opens like an app and works offline.');
+  } else if (install?.canPrompt) {
+    const btn = h('button', { type: 'button', class: 'primary' }, 'Install GymFree');
+    btn.addEventListener('click', async () => {
+      if (await install.prompt()) ctx.toast('GymFree installed.');
+    });
+    body = btn;
+  } else if (install?.isIos) {
+    body = h('p', {}, 'On iPhone or iPad: tap the Share button, then “Add to Home Screen”.');
+  } else {
+    body = h('p', {}, 'Use your browser menu and choose “Install app” or “Add to Home screen”.');
+  }
+  return h('section', { class: 'card' }, h('h2', {}, 'Install & offline'), h('p', { class: 'muted' }, 'After your first visit, GymFree works without an internet connection, including all exercise photos.'), body);
+}
+
+function preferencesCard(ctx: ViewContext): HTMLElement {
   const { state } = ctx;
   const units = choiceGroup({
     name: 'units',
@@ -40,100 +135,17 @@ export function renderSettings(ctx: ViewContext): HTMLElement {
   });
   const animations = h('input', { type: 'checkbox', id: 'animations', checked: state.settings.animations });
   animations.addEventListener('change', () => ctx.update((s) => (s.settings.animations = animations.checked), { render: false }));
-  const autoLock = select(
-    [1, 5, 15, 30, 60, 240].map((m) => [String(m), `${m} minute${m === 1 ? '' : 's'}`] as const),
-    String(state.settings.autoLockMinutes),
-    { id: 'auto-lock' },
-  );
-  autoLock.addEventListener('change', () => ctx.update((s) => (s.settings.autoLockMinutes = Number(autoLock.value)), { render: false }));
-
-  // Change passphrase
-  const cur = h('input', { type: 'password', id: 'cur-pass', autocomplete: 'current-password' });
-  const next = h('input', { type: 'password', id: 'next-pass', autocomplete: 'new-password' });
-  const next2 = h('input', { type: 'password', id: 'next-pass2', autocomplete: 'new-password' });
-  const passMsg = h('p', { role: 'alert' });
-  const passForm = h('form', {}, field('Current passphrase', cur), field('New passphrase', next), field('Repeat new passphrase', next2), passMsg, h('button', { type: 'submit', class: 'secondary' }, 'Change passphrase'));
-  passForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    passMsg.className = 'error';
-    const check = checkPassphrase(next.value);
-    if (!check.ok) return void (passMsg.textContent = check.problems.join('. '));
-    if (next.value !== next2.value) return void (passMsg.textContent = 'New passphrases do not match.');
-    try {
-      await ctx.vault.changePassphrase(cur.value, next.value);
-      await ctx.update(() => {}, { render: false }); // re-save current in-memory state under the new key
-      passForm.reset();
-      passMsg.className = 'success';
-      passMsg.textContent = 'Passphrase changed.';
-    } catch (err) {
-      passMsg.textContent = err instanceof DecryptionError ? 'Current passphrase is wrong.' : (err as Error).message;
-    }
-  });
-
-  // Backup
-  const exportBtn = h('button', { type: 'button', class: 'secondary' }, 'Download encrypted backup');
-  exportBtn.addEventListener('click', async () => {
-    const env = await ctx.vault.exportEncrypted();
-    download(backupFileName(ctx.today()), JSON.stringify(env));
-  });
-  const file = h('input', { type: 'file', id: 'import-file', accept: 'application/json,.json' });
-  const importPass = h('input', { type: 'password', id: 'import-pass', autocomplete: 'off' });
-  const importMsg = h('p', { role: 'alert' });
-  const importForm = h('form', {}, field('Backup file', file), field('Passphrase used for that backup', importPass), importMsg, h('button', { type: 'submit', class: 'secondary' }, 'Restore backup'));
-  importForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    importMsg.className = 'error';
-    const f = file.files?.[0];
-    if (!f) return void (importMsg.textContent = 'Choose a backup file.');
-    if (f.size > MAX_BACKUP_BYTES) return void (importMsg.textContent = 'That file is too large to be a backup.');
-    if (!confirm('Restoring replaces all current data on this device. Continue?')) return;
-    try {
-      const raw = await f.text();
-      const data = await ctx.vault.importEncrypted<AppState>(raw, importPass.value, sanitizeState);
-      await ctx.replaceState(data);
-      ctx.toast('Backup restored. Your passphrase is now the one from the backup.');
-    } catch (err) {
-      importMsg.textContent = err instanceof DecryptionError ? 'Wrong passphrase for this backup.' : (err as Error).message;
-    }
-  });
-
-  const lockBtn = h('button', { type: 'button', class: 'secondary' }, 'Lock now');
-  lockBtn.addEventListener('click', () => ctx.lock());
-
-  const confirmInput = h('input', { type: 'text', id: 'delete-confirm', autocomplete: 'off' });
-  const delBtn = h('button', { type: 'button', class: 'danger' }, 'Delete all my data');
-  delBtn.addEventListener('click', async () => {
-    if (confirmInput.value !== 'DELETE') {
-      confirmInput.focus();
-      return ctx.toast('Type DELETE to confirm.');
-    }
-    await ctx.destroy();
-  });
-
-  const install = ctx.install;
-  let installBody: HTMLElement;
-  if (install?.isStandalone || install?.installed) {
-    installBody = h('p', {}, '✓ Installed. GymFree opens like an app and works offline.');
-  } else if (install?.canPrompt) {
-    const btn = h('button', { type: 'button', class: 'primary' }, 'Install GymFree');
-    btn.addEventListener('click', async () => {
-      if (await install.prompt()) ctx.toast('GymFree installed.');
-    });
-    installBody = btn;
-  } else if (install?.isIos) {
-    installBody = h('p', {}, 'On iPhone or iPad: tap the Share button, then “Add to Home Screen”.');
-  } else {
-    installBody = h('p', {}, 'Use your browser menu and choose “Install app” or “Add to Home screen”.');
-  }
-
   return h(
-    'main',
-    { class: 'container' },
-    h('h1', {}, 'Settings'),
-    h('section', { class: 'card' }, h('h2', {}, 'Install & offline'), h('p', { class: 'muted' }, 'After your first visit, GymFree works without an internet connection, including all exercise photos.'), installBody),
-    h('section', { class: 'card' }, h('h2', {}, 'Preferences'), theme, units, h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')), field('Auto-lock after inactivity', autoLock), h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine')),
-    h('section', { class: 'card' }, h('h2', {}, 'Security'), h('p', { class: 'muted' }, 'Your data is encrypted with AES-256-GCM using a key derived from your passphrase (PBKDF2-SHA-256, 600,000 iterations). The passphrase is never stored.'), passForm, lockBtn),
-    h('section', { class: 'card' }, h('h2', {}, 'Backup & restore'), h('p', { class: 'muted' }, 'Backups stay encrypted. Keep one somewhere safe, for example to move to a new device.'), exportBtn, importForm),
-    h('section', { class: 'card danger-zone' }, h('h2', {}, 'Delete data'), h('p', {}, 'Permanently erase everything stored by this app on this device.'), field('Type DELETE to confirm', confirmInput), delBtn),
+    'section',
+    { class: 'card' },
+    h('h2', {}, 'Preferences'),
+    theme,
+    units,
+    h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')),
+    h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine'),
   );
+}
+
+export function renderSettings(ctx: ViewContext): HTMLElement {
+  return h('main', { class: 'container' }, h('h1', {}, 'Settings'), accountCard(ctx), installCard(ctx), preferencesCard(ctx), backupCard(ctx), deleteCard(ctx));
 }

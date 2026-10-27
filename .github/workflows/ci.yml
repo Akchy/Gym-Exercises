@@ -1,6 +1,8 @@
 name: CI
 on:
+  # main is tested by deploy.yml (tests gate the deploy), so skip it here to test each push once.
   push:
+    branches-ignore: [main]
   pull_request:
 
 permissions:

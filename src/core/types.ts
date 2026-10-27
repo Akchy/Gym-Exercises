@@ -103,7 +103,6 @@ export interface BodyLog {
 export interface Settings {
   units: 'kg' | 'lb';
   animations: boolean;
-  autoLockMinutes: number;
 }
 
 export interface AppState {

@@ -43,7 +43,7 @@ export function createDefaultState(now = new Date()): AppState {
     plan: [],
     workouts: [],
     bodyLogs: [],
-    settings: { units: 'kg', animations: true, autoLockMinutes: 15 },
+    settings: { units: 'kg', animations: true },
   };
 }
 
@@ -195,7 +195,6 @@ export function sanitizeState(input: unknown): AppState {
     settings: {
       units: oneOf(['kg', 'lb'] as const, settings.units, 'kg'),
       animations: settings.animations !== false,
-      autoLockMinutes: Math.round(clampNumber(settings.autoLockMinutes, 1, 240, d.settings.autoLockMinutes)),
     },
   };
 }

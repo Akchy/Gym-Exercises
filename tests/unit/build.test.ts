@@ -3,9 +3,17 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildCsp, listFiles } from '../../vite.config';
+import { basePath, buildCsp, listFiles } from '../../vite.config';
 
 describe('build helpers', () => {
+  it('normalises the base path (root by default, subfolder for GitHub Pages)', () => {
+    expect(basePath(undefined)).toBe('/');
+    expect(basePath('')).toBe('/');
+    expect(basePath('/')).toBe('/');
+    expect(basePath('/Gym-Exercises')).toBe('/Gym-Exercises/');
+    expect(basePath('Gym-Exercises/')).toBe('/Gym-Exercises/');
+  });
+
   it('builds a strict CSP and allows an https storage origin', () => {
     const csp = buildCsp();
     expect(csp).toContain("script-src 'self'");

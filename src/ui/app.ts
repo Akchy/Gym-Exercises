@@ -1,11 +1,12 @@
 /**
- * App controller: owns the decrypted state while unlocked, persists every change through
- * the encrypted vault, routes between views and auto-locks after inactivity.
+ * App controller: owns the current data, saves every change through the Repository (device
+ * first, then the cloud when signed in), routes between views and applies newer data
+ * synced from another device.
  */
 import { toISODate } from '../core/dates';
-import { createDefaultState, sanitizeState } from '../core/state';
+import { sanitizeState } from '../core/state';
+import type { Repository } from '../core/sync';
 import type { AppState } from '../core/types';
-import type { Vault } from '../core/vault';
 import type { ViewContext } from './context';
 import type { InstallManager } from '../pwa/register';
 import { clear, h, svg } from './dom';
@@ -17,8 +18,8 @@ import { renderLogForm, renderLogPicker } from './views/log';
 import { renderOnboarding } from './views/onboarding';
 import { renderPlan, renderPlanEditor } from './views/plan';
 import { renderProgress } from './views/progress';
-import { renderSettings } from './views/settings';
-import { renderUnlock, renderWelcome, type LockHandlers } from './views/lock';
+import { renderSettings, syncStatusText } from './views/settings';
+import { renderLinkChoice, renderWelcome } from './views/welcome';
 
 export interface AppOptions {
   now?: () => Date;
@@ -26,8 +27,6 @@ export interface AppOptions {
   /** Window used for routing/events (injectable for tests). */
   win?: Window;
 }
-
-const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'touchstart'] as const;
 
 const NAV = [
   ['/', 'Home'],
@@ -40,9 +39,10 @@ const NAV = [
 
 export class App {
   private state: AppState | null = null;
-  private saving: Promise<void> = Promise.resolve();
-  private lastActivity = Date.now();
-  private lockTimer: ReturnType<typeof setInterval> | null = null;
+  /** "Which data should we keep?" after signing in with data on both sides. */
+  private link: { device: AppState; account: AppState } | null = null;
+  /** Newer data from another device, held back while a workout is being logged. */
+  private pendingRemote: AppState | null = null;
   private readonly now: () => Date;
   private readonly win: Window;
   private readonly install?: InstallManager;
@@ -50,10 +50,11 @@ export class App {
   private readonly mainEl: HTMLElement;
   private themeBtn: HTMLButtonElement | null = null;
   private header: HTMLElement | null = null;
+  private readonly stopStatus: () => void;
 
   constructor(
     private readonly root: HTMLElement,
-    private readonly vault: Vault,
+    private readonly repo: Repository,
     opts: AppOptions = {},
   ) {
     this.now = opts.now ?? (() => new Date());
@@ -66,13 +67,24 @@ export class App {
     this.win.addEventListener('online', this.onOnline);
     this.win.addEventListener(THEME_EVENT, this.syncThemeButton);
     this.win.addEventListener('click', this.onOutsideClick);
-    for (const ev of ACTIVITY_EVENTS) this.win.addEventListener(ev, this.onActivity, { passive: true });
+    // The sync status in Settings updates in place, without re-rendering the page.
+    this.stopStatus = repo.onStatus((s) => {
+      for (const el of this.root.querySelectorAll('[data-sync-status]')) el.textContent = syncStatusText(s);
+    });
   }
 
-  private readonly onHashChange = () => void this.render();
-  private readonly onActivity = () => (this.lastActivity = Date.now());
+  private readonly onHashChange = () => {
+    if (this.pendingRemote && !this.onLogForm()) {
+      this.state = this.pendingRemote;
+      this.pendingRemote = null;
+    }
+    void this.render();
+  };
   private readonly onOffline = () => this.toast("You're offline. Everything keeps working on this device.");
-  private readonly onOnline = () => this.toast('Back online.');
+  private readonly onOnline = () => {
+    this.toast('Back online.');
+    void this.syncNow();
+  };
   /** Mobile menu: a tap anywhere outside the header closes it. */
   private readonly onOutsideClick = (ev: Event) => {
     if (this.header && !this.header.contains(ev.target as Node)) this.setMenuOpen(false);
@@ -95,20 +107,14 @@ export class App {
     this.themeBtn.title = label;
   };
 
-  /** Removes global listeners and timers (the app is single-page, mostly useful in tests). */
+  /** Removes global listeners (the app is single-page, mostly useful in tests). */
   dispose(): void {
     this.win.removeEventListener('hashchange', this.onHashChange);
     this.win.removeEventListener('offline', this.onOffline);
     this.win.removeEventListener('online', this.onOnline);
     this.win.removeEventListener(THEME_EVENT, this.syncThemeButton);
     this.win.removeEventListener('click', this.onOutsideClick);
-    for (const ev of ACTIVITY_EVENTS) this.win.removeEventListener(ev, this.onActivity);
-    if (this.lockTimer) clearInterval(this.lockTimer);
-    this.lockTimer = null;
-  }
-
-  get isUnlocked(): boolean {
-    return this.state !== null;
+    this.stopStatus();
   }
 
   get currentState(): AppState | null {
@@ -118,58 +124,28 @@ export class App {
   async start(): Promise<void> {
     clear(this.root);
     this.root.append(this.mainEl, this.toastEl);
+    const result = await this.repo.start();
+    if (result.kind === 'ready') this.state = result.state;
+    if (result.kind === 'link') this.link = { device: result.device, account: result.account };
+    await this.render();
+    if (result.kind === 'ready' && this.repo.mode === 'cloud') void this.syncNow();
+  }
+
+  /** Uploads waiting changes, then shows newer data from another device if there is any. */
+  private async syncNow(): Promise<void> {
+    await this.repo.upload();
+    const newer = await this.repo.pull();
+    if (!newer || !this.state) return;
+    if (this.onLogForm()) {
+      this.pendingRemote = newer;
+      return;
+    }
+    this.state = newer;
     await this.render();
   }
 
-  private lockHandlers(): LockHandlers {
-    return {
-      create: async (pass) => {
-        const initial = createDefaultState(this.now());
-        await this.vault.create(pass, initial);
-        this.onUnlocked(initial);
-        this.navigate('/onboarding');
-      },
-      unlock: async (pass) => {
-        const data = sanitizeState(await this.vault.unlock<unknown>(pass));
-        this.onUnlocked(data);
-        await this.render();
-      },
-      restore: async (raw, pass) => {
-        const data = await this.vault.importEncrypted(raw, pass, sanitizeState);
-        this.onUnlocked(data);
-        this.toast('Backup restored.');
-        this.navigate('/');
-      },
-      reset: async () => {
-        await this.vault.destroy();
-        await this.render();
-      },
-    };
-  }
-
-  private onUnlocked(state: AppState) {
-    this.state = state;
-    this.lastActivity = Date.now();
-    if (this.lockTimer) clearInterval(this.lockTimer);
-    this.lockTimer = setInterval(() => this.checkAutoLock(), 15_000);
-  }
-
-  /** Locks if the user has been inactive for longer than their auto-lock setting. */
-  checkAutoLock(nowMs = Date.now()): boolean {
-    if (!this.state) return false;
-    if (nowMs - this.lastActivity >= this.state.settings.autoLockMinutes * 60_000) {
-      this.lock();
-      return true;
-    }
-    return false;
-  }
-
-  lock(): void {
-    this.state = null;
-    this.vault.lock();
-    if (this.lockTimer) clearInterval(this.lockTimer);
-    this.lockTimer = null;
-    void this.render();
+  private onLogForm(): boolean {
+    return /^\/log\/[^/?]+/.test(this.route());
   }
 
   private route(): string {
@@ -188,49 +164,62 @@ export class App {
     setTimeout(() => this.toastEl.classList.remove('show'), 3500);
   }
 
-  /** Waits for all pending encrypted saves (used by tests and before locking). */
+  /** Waits for background uploads (used by tests). */
   flush(): Promise<void> {
-    return this.saving;
+    return this.repo.idle();
   }
 
-  private persist(): Promise<void> {
-    const snapshot = structuredClone(this.state);
-    this.saving = this.saving
-      .then(() => this.vault.save(snapshot))
-      .catch((err: unknown) => this.toast(`Could not save: ${(err as Error).message}`));
-    return this.saving;
+  private persist(): void {
+    try {
+      this.repo.save(this.state as AppState);
+    } catch (err) {
+      this.toast(`Could not save: ${(err as Error).message}`);
+    }
+  }
+
+  /** Back to the first screen after signing out or deleting everything. */
+  private async reset(): Promise<void> {
+    // Without sign-in there is no first screen: start over on this device (setup wizard).
+    this.state = this.repo.cloudEnabled ? null : this.repo.chooseLocal();
+    this.pendingRemote = null;
+    this.win.location.hash = '/';
+    await this.render();
   }
 
   private context(): ViewContext {
     const state = this.state as AppState;
     return {
       state,
-      vault: this.vault,
+      repo: this.repo,
       update: async (mutate, opts = {}) => {
         if (!this.state) return;
-        const draft = structuredClone(this.state);
+        // A workout saved while newer synced data was waiting is added on top of that data.
+        const base = this.pendingRemote ?? this.state;
+        this.pendingRemote = null;
+        const draft = structuredClone(base);
         mutate(draft);
         this.state = sanitizeState(draft);
-        await this.persist();
+        this.persist();
         if (opts.render !== false) await this.render();
       },
       replaceState: async (next) => {
         this.state = next;
-        await this.persist();
+        this.persist();
         this.navigate('/');
       },
+      signIn: () => this.repo.signIn(),
+      signOut: async () => {
+        await this.repo.idle();
+        await this.repo.signOut();
+        await this.reset();
+      },
       destroy: async () => {
-        await this.saving;
-        this.state = null;
-        await this.vault.destroy();
+        await this.repo.deleteAll();
         setTheme('system');
-        if (this.lockTimer) clearInterval(this.lockTimer);
-        this.win.location.hash = '/';
-        await this.render();
+        await this.reset();
       },
       navigate: (p) => this.navigate(p),
       toast: (m) => this.toast(m),
-      lock: () => this.lock(),
       today: () => toISODate(this.now()),
       animate: () => (this.state?.settings.animations ?? true) && !prefersReducedMotion(),
       install: this.install,
@@ -272,12 +261,29 @@ export class App {
     return header;
   }
 
+  /** The first screen: the "which data?" choice, or sign in / use without an account. */
+  private renderEntry(): HTMLElement {
+    if (this.link) {
+      return renderLinkChoice(this.link, async (choice) => {
+        this.state = await this.repo.resolveLink(choice);
+        this.link = null;
+        this.navigate('/');
+      });
+    }
+    return renderWelcome({
+      cloudEnabled: this.repo.cloudEnabled,
+      onGoogle: () => this.repo.signIn().catch((err: Error) => this.toast(`Could not start sign-in: ${err.message}`)),
+      onLocal: () => {
+        this.state = this.repo.chooseLocal();
+        this.navigate('/onboarding');
+      },
+    });
+  }
+
   async render(): Promise<void> {
     clear(this.mainEl);
     if (!this.state) {
-      const exists = await this.vault.exists();
-      this.mainEl.appendChild(exists ? renderUnlock(this.lockHandlers()) : renderWelcome(this.lockHandlers()));
-      this.mainEl.querySelector<HTMLInputElement>('input')?.focus();
+      this.mainEl.appendChild(this.renderEntry());
       return;
     }
     const path = this.route();

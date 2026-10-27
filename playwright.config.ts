@@ -1,4 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
+import { basePath } from './vite.config';
+
+// Same BASE_PATH as the build, so the deploy workflow tests the exact subfolder build it ships.
+const url = `http://localhost:4173${basePath()}`;
 
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -8,7 +12,7 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   timeout: 60_000,
   use: {
-    baseURL: 'http://localhost:4173',
+    baseURL: url,
     trace: 'retain-on-failure',
   },
   projects: [
@@ -17,7 +21,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run build && npm run preview',
-    url: 'http://localhost:4173',
+    url,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

@@ -9,8 +9,8 @@ A fast, subscription-free web app that:
 5. Keeps the **weekly plan fixed and simple**: tap any exercise to see how to do it in place. Everything (days, muscle groups, exercises, sets, reps, rest, cardio) can be customised behind **Edit plan**.
 6. **Guided logging**: each exercise starts with one set, with its target and how-to right there; add sets as you go.
 7. **Tracks progress**: workout log, personal records, estimated-1RM charts, body-weight trend, weekly streaks, sets per muscle group.
-8. **Remembers the user** between visits, with all data **encrypted on the device**.
-9. **Installable and offline**: a Progressive Web App that installs to the home screen or desktop and works without a connection after the first visit.
+8. **Sign in with Google** to see the same plan and progress on phone and computer, or **use it without an account** (data stays on that device).
+9. **Installable and offline**: a Progressive Web App that installs to the home screen or desktop and works without a connection after the first visit. Signed-in changes made offline upload when the connection returns.
 
 ## Quick start
 
@@ -23,41 +23,52 @@ npm run test:e2e       # end-to-end tests (Playwright, desktop + mobile, against
 npm run build          # static site in dist/
 ```
 
-## Security & privacy
+Without Supabase settings the app runs as a this-device-only app (no sign-in). To enable
+Google sign-in locally, copy `.env.example` to `.env.local` and fill in the two values.
+
+## Accounts, sync & privacy
 
 | Concern | How it is handled |
 | --- | --- |
-| Data at rest | All user data (profile, goals, plan, workouts, body weight) is encrypted with **AES-256-GCM** before it is stored. Nothing is stored in plaintext. |
-| Key | Derived from the user's passphrase with **PBKDF2-HMAC-SHA-256, 600,000 iterations**, random 128-bit salt; fresh random 96-bit IV per save. The key is a non-extractable `CryptoKey` kept in memory only while unlocked. |
-| Passphrase | Never stored or transmitted. Minimum 10 characters; common passwords rejected. A forgotten passphrase cannot be recovered (zero-knowledge), so users can keep an encrypted backup. |
-| Tampering | GCM authentication with associated data rejects modified ciphertext. Decrypted/imported data is validated by `sanitizeState()` (unknown fields dropped, numbers clamped, enums checked). |
-| XSS | No `innerHTML`: all text goes through `textContent`. Strict CSP (`script-src 'self'`, no inline scripts/styles, `object-src 'none'`). No third-party scripts, fonts, analytics or trackers. |
-| Session | Lock button and auto-lock after inactivity (configurable). Locking discards the decrypted state and the key. Progressive delay after repeated wrong passphrases. |
-| Headers | HSTS, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, restrictive `Permissions-Policy` (`vercel.json`, `public/_headers`, `deploy/nginx/nginx.conf`). |
-| Server storage | Optional backends receive **ciphertext only**, so even the database owner cannot read user data. |
+| Sign-in | Google only, through Supabase Auth (PKCE). No passwords are handled by the app. |
+| Cloud data | One row per user in `public.user_data` (`deploy/supabase/schema.sql`). **Row Level Security** lets each user read and write only their own row. The project owner can read all rows in the Supabase dashboard. |
+| On the device | A copy is kept in `localStorage` as plain JSON so the app opens and logs workouts offline. Signing out removes it. Without an account it is the only copy. |
+| Sync | Changes save on the device first, then upload. Offline changes are queued and upload when the connection returns. When two devices disagree, the most recently changed copy wins. Newer data arriving mid-workout waits until the workout is saved or left. |
+| Validation | Everything loaded from the cloud, the device or a backup file goes through `sanitizeState()` (unknown fields dropped, numbers clamped, enums checked). |
+| XSS | No `innerHTML`: all text goes through `textContent`. Strict CSP meta tag generated at build time (`script-src 'self'`, `connect-src` limited to the site and your Supabase project, `object-src 'none'`). No analytics or trackers. |
+| Keys | Only the public Supabase URL and **publishable key** (`sb_publishable_…`) ship in the app; the app refuses to start with a secret key. The Google client secret lives only in the Supabase dashboard; secret / `service_role` keys are never used. |
+| Headers | HSTS, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, restrictive `Permissions-Policy` (`vercel.json`, `public/_headers`, `deploy/nginx/nginx.conf`). |
+
+## Supabase + Google setup (one time)
+
+1. **Database**: Supabase → SQL editor → run `deploy/supabase/schema.sql`.
+2. **Google keys**: Google Cloud console → APIs & Services → Credentials → Create OAuth client ID (Web application). Authorised redirect URI: `https://<your-project>.supabase.co/auth/v1/callback`. (Configure the OAuth consent screen first if asked.)
+3. **Enable Google in Supabase**: Authentication → Sign In / Providers → Google → paste the client ID and client secret → Save.
+4. **Allowed return addresses**: Authentication → URL Configuration → Site URL `https://<user>.github.io/<repo>/`; Redirect URLs: add that URL plus `http://localhost:5173/` and `http://localhost:4173/` for development.
+5. **Give the app the public settings**: GitHub repo → Settings → Secrets and variables → Actions → **Variables** tab: `VITE_SUPABASE_URL` (Project Settings → API → Project URL) and `VITE_SUPABASE_PUBLISHABLE_KEY` (Project Settings → API Keys → **Publishable key**, starts with `sb_publishable_`). Locally: `.env.local` with the same names.
 
 ## Architecture
 
 ```
 src/
-  core/   pure logic: crypto, vault, storage adapters, planner, progress, validation
+  core/   pure logic: device store, Supabase cloud, sync rules, planner, progress, validation
   data/   exercise library (49 exercises), photo index, stick-figure fallback poses
   pwa/    service-worker logic (precache, offline fallback) and install prompt
   ui/     tiny DOM helpers, photo demos, chart, one file per screen
   sw.ts   service-worker entry (built to /sw.js with the precache list injected)
-  main.ts wires storage -> vault -> app, registers the service worker
+  main.ts wires device store + cloud -> repository -> app, registers the service worker
 public/exercises/  start/end photos (WebP, ~1.4 MB total)
 scripts/fetch_exercise_images.py  reproducible photo download + conversion
-tests/unit  Vitest (211 tests, ~99% line coverage)
-tests/e2e   Playwright (11 scenarios x desktop + mobile, incl. offline mode)
+tests/unit  Vitest (Supabase replaced by an in-memory fake)
+tests/e2e   Playwright (desktop + mobile, incl. offline mode; runs the no-account flow)
 ```
 
-No UI framework and no runtime dependencies: the app code is about **35 KB gzipped**. Photos are small WebP files that load lazily, and the service worker caches everything, so repeat visits load instantly, even offline. The site makes no third-party requests.
+No UI framework; the only runtime dependency is `@supabase/supabase-js` (sign-in and data). Photos are small WebP files that load lazily, and the service worker caches everything, so repeat visits load instantly, even offline. Requests to Supabase are never cached.
 
 ## Offline & install
 
 - The production build emits `sw.js` with a list of every built file (app, photos, icons). The cache version is a hash of their contents, so each deploy updates cleanly.
-- Pages are network-first, falling back to the cached app when offline; static files are cache-first. Storage API calls are never cached.
+- Pages are network-first, falling back to the cached app when offline; static files are cache-first. Supabase calls are never cached.
 - `manifest.webmanifest` and icons make it installable (Chrome/Edge/Android prompt, iOS "Add to Home Screen"). Settings → *Install & offline* explains it per platform.
 - The service worker is only registered in production builds (`npm run build && npm run preview` to try it locally). Hosts must serve `sw.js` with `Cache-Control: no-cache` (already set in the provided configs).
 
@@ -72,18 +83,16 @@ Exercise photos come from [free-exercise-db](https://github.com/yuhonas/free-exe
 **Public hosting**
 - **Vercel**: import the repo; `vercel.json` configures the build and security headers.
 - **Netlify / Cloudflare Pages**: build `npm run build`, publish `dist`; headers come from `public/_headers`.
-- **GitHub Pages**: publish `dist/` (the CSP is also embedded as a meta tag).
+- **GitHub Pages** (set up): `.github/workflows/deploy.yml` tests and deploys every push to `main`. One-time setup: repo **Settings → Pages → Source: GitHub Actions**. The site is served from `https://<user>.github.io/<repo>/`; the workflow passes that subfolder to the build as `BASE_PATH` (a custom domain switches it back to `/` automatically). The CSP is embedded as a meta tag; Pages cannot send the other security headers from `public/_headers`.
+- **Subfolder builds elsewhere**: `BASE_PATH=/my-folder/ npm run build` (and the same variable for `npm run test:e2e`).
 
 **Closed / private hosting (AWS, Azure, on-prem)**
 - `docker build -t gymfree . && docker run -p 8080:8080 gymfree` (unprivileged nginx with security headers), for ECS/EKS, Azure Container Apps, etc.
 - Or upload `dist/` to S3 + CloudFront / Azure Static Web Apps.
 
-**Storage backends** (build-time env, see `.env.example`):
-- `VITE_STORAGE_BACKEND=local` *(default)*: encrypted data stays in the user's browser.
-- `VITE_STORAGE_BACKEND=http` + `VITE_STORAGE_URL=/api/storage`: encrypted blobs go to your own API (`GET/PUT/DELETE {url}/{key}`), e.g. behind an SSO proxy on a private network.
-- `SupabaseStorageAdapter` (`src/core/storage.ts`) + `deploy/supabase/schema.sql` (row-level security) are ready for cloud sync once a sign-in flow is chosen.
+Every host needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` at build time for sign-in (Docker: `--build-arg`), and its address added to Supabase's Redirect URLs.
 
-CI (`.github/workflows/ci.yml`) runs type checking, unit tests with coverage, and the Playwright E2E suite.
+CI (`.github/workflows/ci.yml`) runs type checking, unit tests with coverage, and the Playwright E2E suite on branches and pull requests; `deploy.yml` runs them on `main` before deploying.
 
 ## Disclaimer
 

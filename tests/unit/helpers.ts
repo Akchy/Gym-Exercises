@@ -1,14 +1,13 @@
-import { MemoryStorageAdapter } from '../../src/core/storage';
 import { createDefaultState } from '../../src/core/state';
 import { generatePlan } from '../../src/core/planner';
+import { DeviceStore } from '../../src/core/store';
+import { Repository } from '../../src/core/sync';
 import type { AppState } from '../../src/core/types';
-import { Vault } from '../../src/core/vault';
 import { App } from '../../src/ui/app';
 import type { ViewContext } from '../../src/ui/context';
+import type { FakeCloud } from './fake-cloud';
 import { vi } from 'vitest';
 
-export const ITER = 1000;
-export const PASS = 'test passphrase 123';
 /** Tuesday 27 Oct 2026, local time. */
 export const NOW = new Date(2026, 9, 27, 10, 0, 0);
 
@@ -31,27 +30,29 @@ export function onboardedState(): AppState {
 
 let current: App | null = null;
 
-export async function makeApp(initial?: AppState) {
+/**
+ * Starts the app on a clean device. `initial` is stored as "use without an account" data;
+ * pass a FakeCloud to build the app with Google sign-in enabled.
+ */
+export async function makeApp(initial?: AppState, opts: { cloud?: FakeCloud } = {}) {
   current?.dispose();
   document.body.innerHTML = '<div id="app"></div>';
   window.location.hash = '';
+  localStorage.clear();
   const root = document.getElementById('app') as HTMLElement;
-  const storage = new MemoryStorageAdapter();
-  const vault = new Vault(storage, ITER);
-  if (initial) await vault.create(PASS, initial);
-  vault.lock();
-  const app = new App(root, vault, { now: () => NOW });
+  const store = new DeviceStore(localStorage);
+  if (initial) {
+    store.setMode('local');
+    store.write('local', { state: initial, updatedAt: NOW.toISOString(), dirty: false });
+  }
+  // Each save gets a later timestamp, like a real clock.
+  let tick = 0;
+  const repo = new Repository(store, opts.cloud ?? null, { now: () => new Date(NOW.getTime() + ++tick * 1000) });
+  const app = new App(root, repo, { now: () => NOW });
   current = app;
   await app.start();
   await settle(app);
-  return { app, root, vault, storage };
-}
-
-export async function unlock(app: App, root: HTMLElement, pass = PASS) {
-  const input = root.querySelector<HTMLInputElement>('#unlock-pass')!;
-  input.value = pass;
-  root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
-  await settle(app, 12);
+  return { app, root, repo, store };
 }
 
 export async function go(app: App, path: string) {
@@ -79,13 +80,14 @@ export function byText<T extends HTMLElement = HTMLElement>(root: ParentNode, se
 export function fakeContext(state: AppState, overrides: Partial<ViewContext> = {}): ViewContext {
   const ctx: ViewContext = {
     state,
+    repo: new Repository(new DeviceStore(localStorage), null),
     update: vi.fn(async (mutate) => mutate(ctx.state)),
     navigate: vi.fn(),
     toast: vi.fn(),
-    lock: vi.fn(),
     replaceState: vi.fn(async () => {}),
+    signIn: vi.fn(async () => {}),
+    signOut: vi.fn(async () => {}),
     destroy: vi.fn(async () => {}),
-    vault: new Vault(new MemoryStorageAdapter(), ITER),
     today: () => '2026-10-27',
     animate: () => true,
     ...overrides,

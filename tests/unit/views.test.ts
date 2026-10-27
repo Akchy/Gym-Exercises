@@ -2,27 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from '../../src/ui/app';
 import { generatePlan } from '../../src/core/planner';
 import { createDefaultState } from '../../src/core/state';
-import { MemoryStorageAdapter } from '../../src/core/storage';
-import { Vault } from '../../src/core/vault';
+import type { DeviceStore } from '../../src/core/store';
 import type { AppState, PlanDay } from '../../src/core/types';
 import { nextPlanDay, renderDashboard } from '../../src/ui/views/dashboard';
 import { draftToEntries, lastWeight } from '../../src/ui/views/log';
 import { prescriptionText } from '../../src/ui/views/plan';
-import { failureDelayMs, renderUnlock } from '../../src/ui/views/lock';
-import { backupFileName, MAX_BACKUP_BYTES, renderSettings } from '../../src/ui/views/settings';
+import { backupFileName, MAX_BACKUP_BYTES, renderSettings, syncStatusText } from '../../src/ui/views/settings';
 import type { InstallManager } from '../../src/pwa/register';
 import { BACK_TARGETS } from '../../src/ui/views/exercises';
-import { byText, change, check, fakeContext, go, ITER, makeApp, onboardedState, PASS, settle, unlock } from './helpers';
+import { byText, change, check, fakeContext, go, makeApp, onboardedState, settle } from './helpers';
 
 let app: App;
 let root: HTMLElement;
-let vault: Vault;
-let storage: MemoryStorageAdapter;
+let store: DeviceStore;
 const state = () => app.currentState as AppState;
 
 beforeEach(async () => {
-  ({ app, root, vault, storage } = await makeApp(onboardedState()));
-  await unlock(app, root);
+  ({ app, root, store } = await makeApp(onboardedState()));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -480,42 +476,28 @@ describe('progress', () => {
 describe('settings', () => {
   beforeEach(() => go(app, '/settings'));
 
-  it('changes preferences', async () => {
+  it('changes preferences and has no lock or passphrase settings', async () => {
     check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
     await settle(app);
     expect(state().settings.units).toBe('lb');
-    change(root.querySelector<HTMLSelectElement>('#auto-lock')!, '5');
-    await settle(app);
-    expect(state().settings.autoLockMinutes).toBe(5);
+    expect(store.read('local')?.state.settings.units).toBe('lb');
+    expect(root.querySelector('#auto-lock')).toBeNull();
+    expect(root.textContent).not.toMatch(/passphrase|Lock now|encrypt/i);
   });
 
-  it('changes the passphrase', async () => {
-    const submit = () => root.querySelector<HTMLInputElement>('#cur-pass')!.form!.dispatchEvent(new Event('submit', { cancelable: true }));
-    const set = (cur: string, a: string, b: string) => {
-      root.querySelector<HTMLInputElement>('#cur-pass')!.value = cur;
-      root.querySelector<HTMLInputElement>('#next-pass')!.value = a;
-      root.querySelector<HTMLInputElement>('#next-pass2')!.value = b;
-    };
-    set(PASS, 'short', 'short');
-    submit();
-    expect(root.textContent).toContain('at least');
-    set(PASS, 'new passphrase 456', 'new passphrase 457');
-    submit();
-    expect(root.textContent).toContain('do not match');
-    set('wrong passphrase', 'new passphrase 456', 'new passphrase 456');
-    submit();
-    await settle(app, 12);
-    expect(root.textContent).toContain('Current passphrase is wrong.');
-    set(PASS, 'new passphrase 456', 'new passphrase 456');
-    submit();
-    await settle(app, 12);
-    expect(root.textContent).toContain('Passphrase changed.');
-    const fresh = new Vault(storage, ITER);
-    await expect(fresh.unlock(PASS)).rejects.toThrow();
-    expect((await fresh.unlock<AppState>('new passphrase 456')).profile.name).toBe('Alex');
+  it('shows local-mode account info without sign-in when Supabase is not configured', () => {
+    expect(root.textContent).toContain('Your data is stored on this device only.');
+    expect(() => byText(root, 'button', 'Sign in with Google to sync')).toThrow();
   });
 
-  it('exports an encrypted backup file', async () => {
+  it('describes every sync status', () => {
+    expect(syncStatusText('synced')).toMatch(/saved to your account/);
+    expect(syncStatusText('saving')).toBe('Saving…');
+    expect(syncStatusText('offline')).toMatch(/back online/);
+    expect(syncStatusText('local')).toMatch(/this device only/);
+  });
+
+  it('exports a plain backup file', async () => {
     const createObjectURL = vi.fn(() => 'blob:x');
     URL.createObjectURL = createObjectURL;
     URL.revokeObjectURL = vi.fn();
@@ -523,21 +505,18 @@ describe('settings', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
       clicks.push(this.download);
     });
-    byText(root, 'button', 'Download encrypted backup').click();
+    byText(root, 'button', 'Download backup').click();
     await settle(app);
-    expect(clicks).toEqual([backupFileName('2026-10-27')]);
+    expect(clicks).toEqual(['gym-backup-2026-10-27.json']);
+    expect(backupFileName('2026-10-27')).toBe('gym-backup-2026-10-27.json');
     const blob = (createObjectURL.mock.calls[0] as unknown[])[0] as Blob;
-    const text = await blob.text();
-    expect(JSON.parse(text)).toMatchObject({ v: 1, kdf: 'PBKDF2-SHA256' });
-    expect(text).not.toContain('Alex');
+    expect(JSON.parse(await blob.text())).toMatchObject({ version: 1, profile: { name: 'Alex' } });
   });
 
-  it('restores a backup with its passphrase', async () => {
-    const other = new Vault(new MemoryStorageAdapter(), ITER);
+  it('restores a backup file', async () => {
     const restored = onboardedState();
     restored.profile.name = 'Restored';
-    await other.create('backup passphrase', restored);
-    const backup = JSON.stringify(await other.exportEncrypted());
+    const backup = JSON.stringify(restored);
     const fileInput = root.querySelector<HTMLInputElement>('#import-file')!;
     const submit = () => fileInput.form!.dispatchEvent(new Event('submit', { cancelable: true }));
     const setFile = (f: File) => Object.defineProperty(fileInput, 'files', { value: [f], configurable: true });
@@ -549,6 +528,11 @@ describe('settings', () => {
     submit();
     expect(root.textContent).toContain('too large');
 
+    setFile(new File(['{"not":"a backup"}'], 'x.json'));
+    submit();
+    await settle(app);
+    expect(root.textContent).toContain('That file is not a GymFree backup.');
+
     setFile(new File([backup], 'backup.json'));
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     submit();
@@ -556,62 +540,37 @@ describe('settings', () => {
     expect(state().profile.name).toBe('Alex');
 
     confirmSpy.mockReturnValue(true);
-    root.querySelector<HTMLInputElement>('#import-pass')!.value = 'wrong one';
     submit();
-    await settle(app, 12);
-    expect(root.textContent).toContain('Wrong passphrase for this backup.');
-
-    setFile(new File(['{"not":"a backup"}'], 'x.json'));
-    submit();
-    await settle(app, 12);
-    expect(root.textContent).toContain('not a recognised');
-
-    setFile(new File([backup], 'backup.json'));
-    root.querySelector<HTMLInputElement>('#import-pass')!.value = 'backup passphrase';
-    submit();
-    await settle(app, 12);
+    await settle(app);
     expect(state().profile.name).toBe('Restored');
     expect(window.location.hash).toBe('#/');
-    const fresh = new Vault(storage, ITER);
-    expect((await fresh.unlock<AppState>('backup passphrase')).profile.name).toBe('Restored');
-  });
-
-  it('locks from settings', async () => {
-    byText(root, 'button', 'Lock now').click();
-    await settle(app);
-    expect(app.isUnlocked).toBe(false);
+    expect(store.read('local')?.state.profile.name).toBe('Restored');
   });
 
   it('deletes all data only after typing DELETE', async () => {
     byText(root, 'button', 'Delete all my data').click();
     await settle(app);
-    expect(await vault.exists()).toBe(true);
+    expect(store.read('local')).not.toBeNull();
     expect(root.querySelector('.toast')?.textContent).toBe('Type DELETE to confirm.');
     root.querySelector<HTMLInputElement>('#delete-confirm')!.value = 'DELETE';
     byText(root, 'button', 'Delete all my data').click();
     await settle(app);
-    expect(await vault.exists()).toBe(false);
-    expect(await storage.getItem('vault')).toBeNull();
-    expect(root.querySelector('#new-pass')).not.toBeNull();
-  });
-});
-
-describe('lock screen helpers', () => {
-  it('backs off after repeated failures', () => {
-    expect(failureDelayMs(1)).toBe(0);
-    expect(failureDelayMs(2)).toBe(0);
-    expect(failureDelayMs(3)).toBe(1000);
-    expect(failureDelayMs(5)).toBe(4000);
-    expect(failureDelayMs(20)).toBe(30_000);
+    expect(store.read('local')).toBeNull();
+    // No sign-in configured, so it starts over with the setup wizard.
+    expect(state().onboarded).toBe(false);
+    expect(window.location.hash).toBe('#/onboarding');
   });
 
-  it('applies the delay and shows non-crypto errors', async () => {
-    const sleep = vi.fn(async () => {});
-    const el = renderUnlock({ create: vi.fn(), restore: vi.fn(), reset: vi.fn(), unlock: vi.fn().mockRejectedValue(new Error('No vault found')) }, sleep);
-    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+  it('reports a failed delete instead of going back to the start', async () => {
+    const destroy = vi.fn(async () => {
+      throw new Error('Failed to fetch');
+    });
+    const ctx = fakeContext(onboardedState(), { destroy });
+    const view = renderSettings(ctx);
+    view.querySelector<HTMLInputElement>('#delete-confirm')!.value = 'DELETE';
+    byText(view, 'button', 'Delete all my data').click();
     await settle();
-    expect(el.querySelector('.error')?.textContent).toBe('No vault found');
-    expect(sleep).toHaveBeenCalledWith(0);
+    expect(ctx.toast).toHaveBeenCalledWith('Could not delete your account data. Check your connection and try again.');
   });
 });
 

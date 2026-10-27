@@ -1,46 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { VAULT_KEY } from '../../src/core/vault';
-import { byText, check, change, go, makeApp, onboardedState, PASS, settle, unlock } from './helpers';
+import type { AppState } from '../../src/core/types';
+import { ALEX, FakeCloud } from './fake-cloud';
+import { byText, change, check, go, makeApp, NOW, onboardedState, settle } from './helpers';
 
 afterEach(() => vi.restoreAllMocks());
 
+function signedIn(name = 'Alex', updatedAt = NOW.toISOString()) {
+  const cloud = new FakeCloud();
+  cloud.user = ALEX;
+  const s = onboardedState();
+  s.profile.name = name;
+  cloud.rows.set(ALEX.id, { data: s, updatedAt });
+  return cloud;
+}
+
+/** A newer version saved by "another device". */
+function newerInCloud(cloud: FakeCloud, name: string) {
+  const s = onboardedState();
+  s.profile.name = name;
+  cloud.rows.set(ALEX.id, { data: s, updatedAt: new Date(NOW.getTime() + 3_600_000).toISOString() });
+}
+
 describe('App: first run', () => {
-  it('shows the welcome screen and validates the passphrase form', async () => {
-    const { root } = await makeApp();
-    expect(root.querySelector('h1')?.textContent).toContain('No sign-up');
-    const form = root.querySelector('form')!;
-    const pass = root.querySelector<HTMLInputElement>('#new-pass')!;
-    const confirmEl = root.querySelector<HTMLInputElement>('#confirm-pass')!;
-    const error = root.querySelector('.error')!;
-
-    pass.value = 'short';
-    pass.dispatchEvent(new Event('input'));
-    expect(root.querySelector('.strength small')?.textContent).toMatch(/at least/);
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(error.textContent).toMatch(/at least/);
-
-    pass.value = 'Strong-Passphrase-9';
-    pass.dispatchEvent(new Event('input'));
-    expect(root.querySelector('.strength small')?.textContent).toBe('Strong');
-    confirmEl.value = 'different-passphrase';
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(error.textContent).toMatch(/do not match/);
-
-    confirmEl.value = 'Strong-Passphrase-9';
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(error.textContent).toMatch(/no recovery/);
-  });
-
-  it('creates an encrypted vault and runs the onboarding wizard', async () => {
-    const { app, root, storage } = await makeApp();
-    root.querySelector<HTMLInputElement>('#new-pass')!.value = PASS;
-    root.querySelector<HTMLInputElement>('#confirm-pass')!.value = PASS;
-    root.querySelector<HTMLInputElement>('#ack')!.checked = true;
-    root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
-    await settle(app, 12);
-
+  it('without sign-in configured goes straight to setup and saves on the device', async () => {
+    const { app, root, store } = await makeApp();
     expect(window.location.hash).toBe('#/onboarding');
     expect(root.querySelector('h2')?.textContent).toMatch(/achieve/);
+    expect(root.querySelector('input[type="password"]')).toBeNull();
     // Step 1: goal
     check(root.querySelector<HTMLInputElement>('#goal-lose-weight')!, true);
     byText(root, 'button', 'Next').click();
@@ -81,8 +67,7 @@ describe('App: first run', () => {
     // The suggested plan is fixed until the user chooses to customise it
     expect(root.querySelector('#pd-0-biceps')).toBeNull();
     byText(root, 'button', 'Customise muscle groups').click();
-    const biceps = root.querySelector<HTMLInputElement>('#pd-0-biceps')!;
-    check(biceps, true);
+    check(root.querySelector<HTMLInputElement>('#pd-0-biceps')!, true);
     expect(root.querySelector<HTMLInputElement>('#pd-0-biceps')!.checked).toBe(true);
     check(root.querySelector<HTMLInputElement>('#pd-0-biceps')!, false);
     byText(root, 'button', 'Done customising').click();
@@ -100,18 +85,14 @@ describe('App: first run', () => {
     expect(state.bodyLogs).toEqual([{ date: '2026-10-27', weightKg: 62 }]);
     expect(state.plan).toHaveLength(2);
     expect(root.querySelector('h1')?.textContent).toBe('Hi, Jo');
-
-    // Nothing sensitive is stored in plaintext
-    const raw = (await storage.getItem(VAULT_KEY))!;
-    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['ct', 'iter', 'iv', 'kdf', 'salt', 'v']);
-    expect(raw).not.toMatch(/"Jo"|lose-weight|kettlebell|"profile"/);
+    expect(store.read('local')?.state.profile.name).toBe('Jo');
+    expect(store.mode()).toBe('local');
   });
 
   it('stores the onboarding weight in pounds correctly', async () => {
     const s = onboardedState();
     s.settings.units = 'lb';
     const { app, root } = await makeApp(s);
-    await unlock(app, root);
     await go(app, '/onboarding');
     byText(root, 'button', 'Next').click();
     byText(root, 'button', 'Next').click();
@@ -122,25 +103,38 @@ describe('App: first run', () => {
     await settle(app, 12);
     expect(app.currentState!.profile.weightKg).toBeCloseTo(100, 1);
   });
-});
 
-describe('App: unlock, lock and auto-lock', () => {
-  it('rejects a wrong passphrase and accepts the right one', async () => {
-    const { app, root } = await makeApp(onboardedState());
-    expect(root.querySelector('h1')?.textContent).toBe('Welcome back');
-    await unlock(app, root, 'wrong passphrase!');
-    expect(root.querySelector('.error')?.textContent).toBe('Wrong passphrase.');
-    expect(app.isUnlocked).toBe(false);
-    await unlock(app, root);
-    expect(app.isUnlocked).toBe(true);
-    expect(root.querySelector('h1')?.textContent).toBe('Hi, Alex');
-    expect(root.querySelector('nav a[aria-current="page"]')?.textContent).toBe('Home');
+  it('with sign-in configured offers Google or no account', async () => {
+    const cloud = new FakeCloud();
+    const { app, root, store } = await makeApp(undefined, { cloud });
+    expect(root.querySelector('h1')?.textContent).toBe('Free gym coach. No subscription.');
+    const google = byText<HTMLButtonElement>(root, 'button', 'Continue with Google');
+    google.click();
+    await settle(app);
+    expect(cloud.signIns).toBe(1);
+    expect(google.disabled).toBe(true);
+    byText(root, 'button', 'Use without an account').click();
+    await settle(app);
+    expect(window.location.hash).toBe('#/onboarding');
+    expect(store.mode()).toBe('local');
   });
 
-  it('has a theme toggle (not a lock button) in the header', async () => {
+  it('reports a sign-in that fails to start', async () => {
+    const cloud = new FakeCloud();
+    cloud.signInWithGoogle = async () => {
+      throw new Error('popup blocked');
+    };
+    const { app, root } = await makeApp(undefined, { cloud });
+    byText(root, 'button', 'Continue with Google').click();
+    await settle(app);
+    expect(root.querySelector('.toast')?.textContent).toBe('Could not start sign-in: popup blocked');
+  });
+});
+
+describe('App: everyday use', () => {
+  it('has a theme toggle and no lock button in the header', async () => {
     localStorage.removeItem('gymx:theme');
     const { app, root } = await makeApp(onboardedState());
-    await unlock(app, root);
     expect(root.querySelector('button[aria-label="Lock app"]')).toBeNull();
     const toggle = root.querySelector<HTMLButtonElement>('button[aria-label="Switch to dark theme"]')!;
     toggle.click();
@@ -155,8 +149,7 @@ describe('App: unlock, lock and auto-lock', () => {
   });
 
   it('opens and closes the mobile menu', async () => {
-    const { app, root } = await makeApp(onboardedState());
-    await unlock(app, root);
+    const { root } = await makeApp(onboardedState());
     const header = root.querySelector('header')!;
     const btn = root.querySelector<HTMLButtonElement>('button.menu-toggle')!;
     expect(btn.getAttribute('aria-controls')).toBe(root.querySelector('nav')!.id);
@@ -174,56 +167,21 @@ describe('App: unlock, lock and auto-lock', () => {
     expect(header.classList.contains('menu-open')).toBe(false);
   });
 
-  it('locks and forgets the decrypted state', async () => {
-    const { app, root, vault } = await makeApp(onboardedState());
-    await unlock(app, root);
-    app.lock();
-    await settle(app);
-    expect(app.isUnlocked).toBe(false);
-    expect(vault.isUnlocked).toBe(false);
-    expect(root.textContent).not.toContain('Alex');
-    expect(root.querySelector('#unlock-pass')).not.toBeNull();
-  });
-
-  it('auto-locks after the configured inactivity', async () => {
-    const { app, root } = await makeApp(onboardedState());
-    expect(app.checkAutoLock()).toBe(false); // already locked
-    await unlock(app, root);
-    expect(app.checkAutoLock(Date.now() + 60_000)).toBe(false);
-    expect(app.checkAutoLock(Date.now() + 15 * 60_000 + 1)).toBe(true);
-    expect(app.isUnlocked).toBe(false);
-  });
-
-  it('resets everything when the user forgot the passphrase', async () => {
-    const { app, root, vault } = await makeApp(onboardedState());
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
-    byText(root, 'button', /Forgot passphrase/).click();
-    await settle(app);
-    expect(await vault.exists()).toBe(true);
-    byText(root, 'button', /Forgot passphrase/).click();
-    await settle(app);
-    expect(await vault.exists()).toBe(false);
-    expect(root.querySelector('#new-pass')).not.toBeNull();
-  });
-
   it('redirects to onboarding until it is finished, and handles unknown routes', async () => {
     const s = onboardedState();
     s.onboarded = false;
-    const { app, root } = await makeApp(s);
-    await unlock(app, root);
+    const { app } = await makeApp(s);
     expect(window.location.hash).toBe('#/onboarding');
     await go(app, '/progress');
     expect(window.location.hash).toBe('#/onboarding');
 
     const { app: app2, root: root2 } = await makeApp(onboardedState());
-    await unlock(app2, root2);
     await go(app2, '/nowhere');
     expect(root2.querySelector('h1')?.textContent).toBe('Page not found');
   });
 
   it('routes to every section', async () => {
     const { app, root } = await makeApp(onboardedState());
-    await unlock(app, root);
     const expectations: [string, string][] = [
       ['/plan', 'My weekly plan'],
       ['/plan/edit', 'Edit your plan'],
@@ -243,87 +201,15 @@ describe('App: unlock, lock and auto-lock', () => {
     }
   });
 
-  it('persists edits encrypted so they survive a reload', async () => {
-    const { app, root, storage } = await makeApp(onboardedState());
-    await unlock(app, root);
+  it('shows a toast when saving on the device fails', async () => {
+    const { app, root } = await makeApp(onboardedState());
     await go(app, '/settings');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw new Error('quota');
+    });
     check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
     await settle(app);
-    const { Vault } = await import('../../src/core/vault');
-    const data = await new Vault(storage, 1000).unlock<{ settings: { units: string } }>(PASS);
-    expect(data.settings.units).toBe('lb');
-  });
-
-  it('shows a toast when saving fails', async () => {
-    const { app, root, vault } = await makeApp(onboardedState());
-    await unlock(app, root);
-    vi.spyOn(vault, 'save').mockRejectedValueOnce(new Error('disk full'));
-    await go(app, '/settings');
-    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
-    await settle(app);
-    expect(root.querySelector('.toast')?.textContent).toBe('Could not save: disk full');
-  });
-});
-
-describe('App: restore from the welcome screen', () => {
-  it('restores an encrypted backup onto an empty device', async () => {
-    const { MemoryStorageAdapter } = await import('../../src/core/storage');
-    const { Vault } = await import('../../src/core/vault');
-    const source = new Vault(new MemoryStorageAdapter(), 1000);
-    await source.create('backup passphrase', onboardedState());
-    const backup = JSON.stringify(await source.exportEncrypted());
-
-    const { app, root } = await makeApp();
-    const fileInput = root.querySelector<HTMLInputElement>('#restore-file')!;
-    const form = fileInput.form!;
-    const setFile = (f: File) => Object.defineProperty(fileInput, 'files', { value: [f], configurable: true });
-    const error = () => form.querySelector('.error')!.textContent;
-
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(error()).toBe('Choose a backup file.');
-    const big = new File(['x'], 'big.json');
-    Object.defineProperty(big, 'size', { value: 11 * 1024 * 1024 });
-    setFile(big);
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(error()).toMatch(/too large/);
-
-    setFile(new File([backup], 'backup.json'));
-    root.querySelector<HTMLInputElement>('#restore-pass')!.value = 'wrong';
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    await settle(app, 12);
-    expect(error()).toBe('Wrong passphrase for this backup.');
-
-    setFile(new File(['{"bad":1}'], 'backup.json'));
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    await settle(app, 12);
-    expect(error()).toMatch(/not a recognised/);
-
-    setFile(new File([backup], 'backup.json'));
-    root.querySelector<HTMLInputElement>('#restore-pass')!.value = 'backup passphrase';
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    await settle(app, 12);
-    expect(app.isUnlocked).toBe(true);
-    expect(root.querySelector('h1')?.textContent).toBe('Hi, Alex');
-  });
-});
-
-describe('App: onboarding details', () => {
-  it('lets the user skip the optional "about you" step', async () => {
-    const s = onboardedState();
-    s.onboarded = false;
-    s.profile = { ...s.profile, name: '', age: null, heightCm: null, weightKg: null };
-    const { app, root } = await makeApp(s);
-    await unlock(app, root);
-    byText(root, 'button', 'Next').click();
-    byText(root, 'button', 'Next').click();
-    expect(root.querySelector('.steps .current')?.textContent).toBe('About you (optional)');
-    byText(root, 'button', 'Skip this step').click();
-    expect(root.querySelector('h2')?.textContent).toMatch(/Suggested plan/);
-    expect(root.querySelector('button.link')?.textContent).toBe('Customise muscle groups');
-    byText(root, 'button', 'Save my plan').click();
-    await settle(app, 12);
-    expect(app.currentState!.onboarded).toBe(true);
-    expect(app.currentState!.bodyLogs).toEqual([]);
+    expect(root.querySelector('.toast')?.textContent).toMatch(/^Could not save: Could not save on this device/);
   });
 
   it('toasts when connectivity changes and cleans up listeners', async () => {
@@ -335,5 +221,123 @@ describe('App: onboarding details', () => {
     app.dispose();
     window.dispatchEvent(new Event('offline'));
     expect(root.querySelector('.toast')?.textContent).toBe('Back online.');
+  });
+});
+
+describe('App: signed in with Google', () => {
+  it("loads the account's data on a new device and shows the account in Settings", async () => {
+    const { app, root, store } = await makeApp(undefined, { cloud: signedIn('Sam') });
+    expect(root.querySelector('h1')?.textContent).toBe('Hi, Sam');
+    await go(app, '/settings');
+    expect(root.textContent).toContain('Signed in as alex@example.com');
+    expect(root.querySelector('[data-sync-status]')?.textContent).toBe('All changes saved to your account.');
+    expect(store.mode()).toBe('cloud');
+  });
+
+  it('uploads edits and updates the sync status in place', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    const status = root.querySelector('[data-sync-status]')!;
+    cloud.offline = true;
+    check(root.querySelector<HTMLInputElement>('#animations')!, false);
+    await settle(app);
+    expect(status.isConnected).toBe(true);
+    expect(status.textContent).toMatch(/Offline/);
+    cloud.offline = false;
+    window.dispatchEvent(new Event('online'));
+    await settle(app);
+    expect(status.textContent).toBe('All changes saved to your account.');
+    expect((cloud.rows.get(ALEX.id)?.data as AppState).settings.animations).toBe(false);
+  });
+
+  it('shows newer data from another device when back online', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    newerInCloud(cloud, 'Phone edit');
+    window.dispatchEvent(new Event('online'));
+    await settle(app);
+    expect(root.querySelector('h1')?.textContent).toBe('Hi, Phone edit');
+  });
+
+  it('holds back synced data during a workout, then saves the workout on top of it', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, `/log/${app.currentState!.plan[0].id}`);
+    newerInCloud(cloud, 'Phone edit');
+    window.dispatchEvent(new Event('online'));
+    await settle(app);
+    expect(app.currentState!.profile.name).toBe('Alex'); // not swapped mid-workout
+    change(root.querySelector<HTMLInputElement>('input.num')!, '10');
+    root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle(app, 12);
+    expect(app.currentState!.profile.name).toBe('Phone edit');
+    expect(app.currentState!.workouts).toHaveLength(1);
+    expect((cloud.rows.get(ALEX.id)?.data as AppState).workouts).toHaveLength(1);
+  });
+
+  it('applies held-back data when leaving the workout without saving', async () => {
+    const cloud = signedIn();
+    const { app } = await makeApp(undefined, { cloud });
+    await go(app, '/log/free');
+    newerInCloud(cloud, 'Phone edit');
+    window.dispatchEvent(new Event('online'));
+    await settle(app);
+    expect(app.currentState!.profile.name).toBe('Alex');
+    await go(app, '/');
+    expect(app.currentState!.profile.name).toBe('Phone edit');
+  });
+
+  it('asks which data to keep after signing in with data on both sides', async () => {
+    const cloud = signedIn('Account');
+    const local = onboardedState();
+    local.profile.name = 'Device';
+    const { app, root } = await makeApp(local, { cloud });
+    expect(root.querySelector('h1')?.textContent).toBe('Which data should we keep?');
+    byText(root, 'button', 'Keep my account data').click();
+    await settle(app);
+    expect(root.querySelector('h1')?.textContent).toBe('Hi, Account');
+  });
+
+  it('warns before signing out with changes that have not uploaded', async () => {
+    const cloud = signedIn();
+    const { app, root, store } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    cloud.offline = true;
+    check(root.querySelector<HTMLInputElement>('#units-lb')!, true);
+    await settle(app);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    byText(root, 'button', 'Sign out').click();
+    await settle(app);
+    expect(confirmSpy).toHaveBeenCalledWith("Some changes haven't uploaded yet. Sign out anyway?");
+    expect(app.currentState).not.toBeNull();
+
+    confirmSpy.mockReturnValue(true);
+    byText(root, 'button', 'Sign out').click();
+    await settle(app);
+    expect(app.currentState).toBeNull();
+    expect(root.textContent).toContain('Continue with Google');
+    expect(store.read({ user: ALEX.id })).toBeNull();
+  });
+
+  it('deletes the account data and returns to the first screen', async () => {
+    const cloud = signedIn();
+    const { app, root } = await makeApp(undefined, { cloud });
+    await go(app, '/settings');
+    expect(root.textContent).toContain('from your account and this device');
+    root.querySelector<HTMLInputElement>('#delete-confirm')!.value = 'DELETE';
+    byText(root, 'button', 'Delete all my data').click();
+    await settle(app);
+    expect(cloud.rows.has(ALEX.id)).toBe(false);
+    expect(root.textContent).toContain('Continue with Google');
+  });
+
+  it('offers sign-in from Settings in local mode', async () => {
+    const cloud = new FakeCloud();
+    const { app, root } = await makeApp(onboardedState(), { cloud });
+    await go(app, '/settings');
+    byText(root, 'button', 'Sign in with Google to sync').click();
+    await settle(app);
+    expect(cloud.signIns).toBe(1);
   });
 });

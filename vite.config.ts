@@ -4,10 +4,13 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 
-/** Builds a strict Content-Security-Policy. Only added to production builds (dev needs inline HMR scripts). */
-export function buildCsp(storageUrl?: string): string {
+/**
+ * Builds a strict Content-Security-Policy. Only added to production builds (dev needs inline
+ * HMR scripts). `supabaseUrl` is the only other origin the app may talk to.
+ */
+export function buildCsp(supabaseUrl?: string): string {
   let connect = "'self'";
-  if (storageUrl && /^https:\/\//.test(storageUrl)) connect += ` ${new URL(storageUrl).origin}`;
+  if (supabaseUrl && /^https:\/\//.test(supabaseUrl)) connect += ` ${new URL(supabaseUrl).origin}`;
   return [
     "default-src 'self'",
     "script-src 'self'",
@@ -21,14 +24,14 @@ export function buildCsp(storageUrl?: string): string {
   ].join('; ');
 }
 
-function csp(storageUrl?: string): Plugin {
+function csp(supabaseUrl?: string): Plugin {
   return {
     name: 'inject-csp',
     apply: 'build',
     transformIndexHtml(html) {
       return html.replace(
         '<meta charset="UTF-8" />',
-        `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${buildCsp(storageUrl)}" />`,
+        `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${buildCsp(supabaseUrl)}" />`,
       );
     },
   };
@@ -43,6 +46,15 @@ export function listFiles(dir: string, root = dir): string[] {
     else out.push(relative(root, full).split('\\').join('/'));
   }
   return out;
+}
+
+/**
+ * Public path the site is served from: "/" by default, or a subfolder such as "/Gym-Exercises/"
+ * for GitHub Pages project sites (set BASE_PATH at build time). Always has leading/trailing "/".
+ */
+export function basePath(raw = process.env.BASE_PATH): string {
+  const trimmed = (raw ?? '').trim().replace(/^\/+|\/+$/g, '');
+  return trimmed ? `/${trimmed}/` : '/';
 }
 
 const NOT_PRECACHED = new Set(['sw.js', '_headers', 'icons/maskable.svg']);
@@ -86,7 +98,8 @@ function serviceWorker(): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
   return {
-    plugins: [csp(env.VITE_STORAGE_URL), serviceWorker()],
+    base: basePath(),
+    plugins: [csp(env.VITE_SUPABASE_URL), serviceWorker()],
     build: {
       target: 'es2022',
       sourcemap: false,

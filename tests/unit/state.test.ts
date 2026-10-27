@@ -62,7 +62,8 @@ describe('sanitizeState', () => {
     expect(s.routine.minutesPerSession).toBe(180);
     expect(s.routine.equipment).toEqual(['bodyweight', 'barbell']);
     expect(s.routine.activityLevel).toBe('light');
-    expect(s.settings).toEqual({ units: 'kg', animations: false, autoLockMinutes: 1 });
+    // Old backups may still carry autoLockMinutes; it is dropped now that there is no lock.
+    expect(s.settings).toEqual({ units: 'kg', animations: false });
   });
 
   it('validates plan days and exercises', () => {
