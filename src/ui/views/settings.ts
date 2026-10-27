@@ -4,6 +4,7 @@ import { sanitizeState } from '../../core/state';
 import type { AppState } from '../../core/types';
 import type { ViewContext } from '../context';
 import { choiceGroup, field, h, select } from '../dom';
+import { getTheme, setTheme } from '../theme';
 import { MAX_BACKUP_BYTES } from './lock';
 
 export { MAX_BACKUP_BYTES };
@@ -29,6 +30,13 @@ export function renderSettings(ctx: ViewContext): HTMLElement {
     options: [['kg', 'Kilograms (kg)'], ['lb', 'Pounds (lb)']],
     value: state.settings.units,
     onChange: (v) => ctx.update((s) => (s.settings.units = v)),
+  });
+  const theme = choiceGroup({
+    name: 'theme',
+    legend: 'Theme',
+    options: [['system', 'Match device'], ['light', 'Light'], ['dark', 'Dark']],
+    value: getTheme(),
+    onChange: (v) => setTheme(v),
   });
   const animations = h('input', { type: 'checkbox', id: 'animations', checked: state.settings.animations });
   animations.addEventListener('change', () => ctx.update((s) => (s.settings.animations = animations.checked), { render: false }));
@@ -123,7 +131,7 @@ export function renderSettings(ctx: ViewContext): HTMLElement {
     { class: 'container' },
     h('h1', {}, 'Settings'),
     h('section', { class: 'card' }, h('h2', {}, 'Install & offline'), h('p', { class: 'muted' }, 'After your first visit, GymFree works without an internet connection, including all exercise photos.'), installBody),
-    h('section', { class: 'card' }, h('h2', {}, 'Preferences'), units, h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')), field('Auto-lock after inactivity', autoLock), h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine')),
+    h('section', { class: 'card' }, h('h2', {}, 'Preferences'), theme, units, h('div', { class: 'field inline' }, animations, h('label', { for: 'animations' }, 'Animated exercise demos (off = start/end images)')), field('Auto-lock after inactivity', autoLock), h('a', { href: '#/onboarding', class: 'button secondary' }, 'Change goal & routine')),
     h('section', { class: 'card' }, h('h2', {}, 'Security'), h('p', { class: 'muted' }, 'Your data is encrypted with AES-256-GCM using a key derived from your passphrase (PBKDF2-SHA-256, 600,000 iterations). The passphrase is never stored.'), passForm, lockBtn),
     h('section', { class: 'card' }, h('h2', {}, 'Backup & restore'), h('p', { class: 'muted' }, 'Backups stay encrypted. Keep one somewhere safe, for example to move to a new device.'), exportBtn, importForm),
     h('section', { class: 'card danger-zone' }, h('h2', {}, 'Delete data'), h('p', {}, 'Permanently erase everything stored by this app on this device.'), field('Type DELETE to confirm', confirmInput), delBtn),

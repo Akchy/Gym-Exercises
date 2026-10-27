@@ -137,10 +137,47 @@ describe('App: unlock, lock and auto-lock', () => {
     expect(root.querySelector('nav a[aria-current="page"]')?.textContent).toBe('Home');
   });
 
-  it('locks from the header and forgets the decrypted state', async () => {
+  it('has a theme toggle (not a lock button) in the header', async () => {
+    localStorage.removeItem('gymx:theme');
+    const { app, root } = await makeApp(onboardedState());
+    await unlock(app, root);
+    expect(root.querySelector('button[aria-label="Lock app"]')).toBeNull();
+    const toggle = root.querySelector<HTMLButtonElement>('button[aria-label="Switch to dark theme"]')!;
+    toggle.click();
+    expect(root.querySelector('.theme-toggle')).toBe(toggle); // updated in place, no re-render
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('gymx:theme')).toBe('dark');
+    root.querySelector<HTMLButtonElement>('button[aria-label="Switch to light theme"]')!.click();
+    await settle(app);
+    expect(document.documentElement.dataset.theme).toBe('light');
+    localStorage.removeItem('gymx:theme');
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('opens and closes the mobile menu', async () => {
+    const { app, root } = await makeApp(onboardedState());
+    await unlock(app, root);
+    const header = root.querySelector('header')!;
+    const btn = root.querySelector<HTMLButtonElement>('button.menu-toggle')!;
+    expect(btn.getAttribute('aria-controls')).toBe(root.querySelector('nav')!.id);
+    btn.click();
+    expect(header.classList.contains('menu-open')).toBe(true);
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(btn.getAttribute('aria-label')).toBe('Close menu');
+    header.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(header.classList.contains('menu-open')).toBe(false);
+    btn.click();
+    document.body.click(); // outside the header
+    expect(header.classList.contains('menu-open')).toBe(false);
+    btn.click();
+    root.querySelector<HTMLAnchorElement>('nav a[aria-current="page"]')!.click();
+    expect(header.classList.contains('menu-open')).toBe(false);
+  });
+
+  it('locks and forgets the decrypted state', async () => {
     const { app, root, vault } = await makeApp(onboardedState());
     await unlock(app, root);
-    root.querySelector<HTMLButtonElement>('button[aria-label="Lock app"]')!.click();
+    app.lock();
     await settle(app);
     expect(app.isUnlocked).toBe(false);
     expect(vault.isUnlocked).toBe(false);

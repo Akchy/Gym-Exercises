@@ -5,7 +5,7 @@ import type { LoggedExercise, PlannedExercise, WorkoutLog } from '../../core/typ
 import { fromDisplayWeight, round, toDisplayWeight } from '../../core/units';
 import { EXERCISES, getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
-import { clear, h } from '../dom';
+import { clear, h, stepper } from '../dom';
 import { renderDemo } from '../demo';
 import { prescriptionText } from './plan';
 
@@ -86,7 +86,7 @@ export function renderLogForm(ctx: ViewContext, dayId: string): HTMLElement {
           entry.sets.splice(si, 1);
           renderEntries();
         });
-        return h('tr', {}, h('td', {}, String(si + 1)), h('td', {}, reps), h('td', {}, weight), h('td', {}, entry.sets.length > 1 ? remove : null));
+        return h('tr', {}, h('td', {}, String(si + 1)), h('td', {}, stepper(reps)), h('td', {}, stepper(weight, units === 'kg' ? 2.5 : 5)), h('td', {}, entry.sets.length > 1 ? remove : null));
       });
       const addSet = h('button', { type: 'button', class: 'secondary' }, '+ Add set');
       addSet.addEventListener('click', () => {
@@ -143,7 +143,7 @@ export function renderLogForm(ctx: ViewContext, dayId: string): HTMLElement {
     { class: 'container' },
     h('h1', {}, day ? day.name : 'Free workout'),
     h('p', { class: 'muted' }, 'Fill in each set as you finish it. Grey numbers are your target and last weight. Empty sets are not saved.'),
-    h('div', { class: 'row' }, h('label', { for: 'log-date' }, 'Date ', date), h('label', { for: 'log-duration' }, 'Duration (min) ', duration)),
+    h('div', { class: 'row' }, h('label', { for: 'log-date' }, 'Date ', date), h('label', { for: 'log-duration' }, 'Duration (min)'), stepper(duration, 5)),
     list,
     picker,
     h('div', { class: 'field' }, h('label', { for: 'log-notes' }, 'Notes (optional)'), notes),

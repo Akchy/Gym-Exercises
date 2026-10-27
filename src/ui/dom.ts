@@ -47,13 +47,40 @@ export function clear(el: Element): void {
 /** Labelled form field helper. */
 let fieldCounter = 0;
 export function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
-  const id = control.id || `f${++fieldCounter}`;
-  control.id = id;
+  // A wrapped control (e.g. a stepper) is labelled through the input inside it.
+  const target = control.querySelector<HTMLElement>('input, select, textarea') ?? control;
+  const id = target.id || `f${++fieldCounter}`;
+  target.id = id;
   return h('div', { class: 'field' }, h('label', { for: id }, label), control, hint ? h('small', { class: 'hint' }, hint) : null);
 }
 
 export function select<T extends string>(options: readonly (readonly [T, string])[], value: T, attrs: Attrs = {}): HTMLSelectElement {
   return h('select', attrs, ...options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+}
+
+/**
+ * Wraps a number input with themed − / + buttons (the native spinners are hidden in CSS).
+ * Buttons step by the input's numeric `step` (or `step` here), clamp to min/max, start from
+ * the placeholder or min when empty, and fire `change` so callers keep a single listener.
+ */
+export function stepper(input: HTMLInputElement, step?: number): HTMLElement {
+  const by = step ?? (Number(input.step) || 1);
+  const bound = (attr: string, fallback: number) => (input.hasAttribute(attr) && input.getAttribute(attr) !== '' ? Number(input.getAttribute(attr)) : fallback);
+  const button = (dir: -1 | 1) => {
+    const b = h('button', { type: 'button', class: 'step-btn', tabindex: -1, 'aria-label': `${dir < 0 ? 'Decrease' : 'Increase'} by ${by}` }, dir < 0 ? '−' : '+');
+    b.addEventListener('click', () => {
+      const min = bound('min', -Infinity);
+      const max = bound('max', Infinity);
+      const start = input.value !== '' ? Number(input.value) : Number(input.placeholder) || (Number.isFinite(min) ? min : 0);
+      // Snap to the step grid: with step 2.5, 7.3 goes up to 7.5 and down to 5.
+      const next = input.value === '' && dir > 0 && start > 0 ? start : (dir > 0 ? Math.floor(start / by + 1e-9) + 1 : Math.ceil(start / by - 1e-9) - 1) * by;
+      input.value = String(Math.round(Math.min(max, Math.max(min, next)) * 1000) / 1000);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    return b;
+  };
+  return h('span', { class: 'stepper' }, button(-1), input, button(1));
 }
 
 export function titleCase(s: string): string {

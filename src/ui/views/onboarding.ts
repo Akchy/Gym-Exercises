@@ -15,7 +15,7 @@ import {
 import { fromDisplayWeight, round, toDisplayWeight } from '../../core/units';
 import { getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
-import { choiceGroup, clear, field, h } from '../dom';
+import { choiceGroup, clear, field, h, stepper } from '../dom';
 import { ACTIVITY_LABELS, EQUIPMENT_LABELS, EXPERIENCE_LABELS, MUSCLE_LABELS, TIME_LABELS } from '../labels';
 
 type Draft = Pick<AppState, 'goal' | 'profile' | 'routine'> & { plan: PlanDay[] };
@@ -123,7 +123,7 @@ export function renderOnboarding(ctx: ViewContext): HTMLElement {
     const num = (id: string, value: number | null, min: number, max: number, onSet: (v: number | null) => void) => {
       const input = h('input', { type: 'number', id, min, max, step: 'any', inputmode: 'decimal', value: value ?? '' });
       input.addEventListener('change', () => onSet(input.value === '' ? null : clampNumber(input.value, min, max, min)));
-      return input;
+      return stepper(input);
     };
     return h(
       'section',

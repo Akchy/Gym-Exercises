@@ -3,6 +3,9 @@ import { createStorage } from './core/config';
 import { Vault } from './core/vault';
 import { App } from './ui/app';
 import { InstallManager, registerServiceWorker } from './pwa/register';
+import { applyTheme } from './ui/theme';
+
+applyTheme();
 
 const root = document.getElementById('app');
 if (!root) throw new Error('#app element missing');

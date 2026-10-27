@@ -8,8 +8,9 @@ import type { AppState } from '../core/types';
 import type { Vault } from '../core/vault';
 import type { ViewContext } from './context';
 import type { InstallManager } from '../pwa/register';
-import { clear, h } from './dom';
+import { clear, h, svg } from './dom';
 import { prefersReducedMotion } from './figure';
+import { effectiveTheme, setTheme, THEME_EVENT } from './theme';
 import { renderDashboard } from './views/dashboard';
 import { renderExerciseDetail, renderExerciseList } from './views/exercises';
 import { renderLogForm, renderLogPicker } from './views/log';
@@ -47,6 +48,8 @@ export class App {
   private readonly install?: InstallManager;
   private readonly toastEl: HTMLElement;
   private readonly mainEl: HTMLElement;
+  private themeBtn: HTMLButtonElement | null = null;
+  private header: HTMLElement | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -61,6 +64,8 @@ export class App {
     this.win.addEventListener('hashchange', this.onHashChange);
     this.win.addEventListener('offline', this.onOffline);
     this.win.addEventListener('online', this.onOnline);
+    this.win.addEventListener(THEME_EVENT, this.syncThemeButton);
+    this.win.addEventListener('click', this.onOutsideClick);
     for (const ev of ACTIVITY_EVENTS) this.win.addEventListener(ev, this.onActivity, { passive: true });
   }
 
@@ -68,12 +73,35 @@ export class App {
   private readonly onActivity = () => (this.lastActivity = Date.now());
   private readonly onOffline = () => this.toast("You're offline. Everything keeps working on this device.");
   private readonly onOnline = () => this.toast('Back online.');
+  /** Mobile menu: a tap anywhere outside the header closes it. */
+  private readonly onOutsideClick = (ev: Event) => {
+    if (this.header && !this.header.contains(ev.target as Node)) this.setMenuOpen(false);
+  };
+
+  private setMenuOpen(open: boolean): void {
+    this.header?.classList.toggle('menu-open', open);
+    const btn = this.header?.querySelector('.menu-toggle');
+    btn?.setAttribute('aria-expanded', String(open));
+    btn?.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+  }
+
+  /** Updates the header toggle in place: re-rendering would wipe a half-filled workout log. */
+  private readonly syncThemeButton = () => {
+    if (!this.themeBtn) return;
+    const dark = effectiveTheme() === 'dark';
+    const label = dark ? 'Switch to light theme' : 'Switch to dark theme';
+    this.themeBtn.textContent = dark ? '☀' : '☾';
+    this.themeBtn.setAttribute('aria-label', label);
+    this.themeBtn.title = label;
+  };
 
   /** Removes global listeners and timers (the app is single-page, mostly useful in tests). */
   dispose(): void {
     this.win.removeEventListener('hashchange', this.onHashChange);
     this.win.removeEventListener('offline', this.onOffline);
     this.win.removeEventListener('online', this.onOnline);
+    this.win.removeEventListener(THEME_EVENT, this.syncThemeButton);
+    this.win.removeEventListener('click', this.onOutsideClick);
     for (const ev of ACTIVITY_EVENTS) this.win.removeEventListener(ev, this.onActivity);
     if (this.lockTimer) clearInterval(this.lockTimer);
     this.lockTimer = null;
@@ -195,6 +223,7 @@ export class App {
         await this.saving;
         this.state = null;
         await this.vault.destroy();
+        setTheme('system');
         if (this.lockTimer) clearInterval(this.lockTimer);
         this.win.location.hash = '/';
         await this.render();
@@ -209,20 +238,38 @@ export class App {
   }
 
   private nav(path: string): HTMLElement {
-    const lockBtn = h('button', { type: 'button', class: 'icon', 'aria-label': 'Lock app', title: 'Lock' }, '🔒');
-    lockBtn.addEventListener('click', () => this.lock());
+    const themeBtn = h('button', { type: 'button', class: 'icon theme-toggle' });
+    themeBtn.addEventListener('click', () => setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));
+    this.themeBtn = themeBtn;
+    this.syncThemeButton();
+    // Hamburger icon (shown on narrow screens only, see .menu-toggle in styles.css).
+    const icon = svg('svg', { viewBox: '0 0 24 24', width: 22, height: 22, 'aria-hidden': 'true' },
+      ...[6, 12, 18].map((y) => svg('line', { x1: 4, x2: 20, y1: y, y2: y })));
+    const menuBtn = h('button', { type: 'button', class: 'icon menu-toggle', 'aria-controls': 'main-nav', 'aria-expanded': 'false', 'aria-label': 'Open menu' }, icon);
+    menuBtn.addEventListener('click', () => this.setMenuOpen(!this.header?.classList.contains('menu-open')));
     const top = '/' + (path.split('?')[0].split('/')[1] ?? '');
-    return h(
+    const header = h(
       'header',
       { class: 'topbar' },
       h('a', { href: '#/', class: 'brand' }, 'GymFree'),
       h(
         'nav',
-        { 'aria-label': 'Main' },
+        { 'aria-label': 'Main', id: 'main-nav' },
         ...NAV.map(([href, label]) => h('a', { href: `#${href}`, 'aria-current': top === href ? 'page' : null }, label)),
       ),
-      lockBtn,
+      themeBtn,
+      menuBtn,
     );
+    header.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && header.classList.contains('menu-open')) {
+        this.setMenuOpen(false);
+        menuBtn.focus();
+      }
+    });
+    // Choosing the page you are already on doesn't change the hash, so close explicitly.
+    header.querySelector('nav')!.addEventListener('click', (ev) => (ev.target as Element).closest('a') && this.setMenuOpen(false));
+    this.header = header;
+    return header;
   }
 
   async render(): Promise<void> {

@@ -15,7 +15,7 @@ import { formatWeight, fromDisplayWeight, round, toDisplayWeight } from '../../c
 import { getExercise } from '../../data/exercises';
 import { lineChart } from '../chart';
 import type { ViewContext } from '../context';
-import { h } from '../dom';
+import { h, stepper } from '../dom';
 import { MUSCLE_LABELS } from '../labels';
 
 export function renderProgress(ctx: ViewContext): HTMLElement {
@@ -49,7 +49,7 @@ export function renderProgress(ctx: ViewContext): HTMLElement {
     'form',
     { class: 'row' },
     h('label', { for: 'bw-date' }, 'Date ', bwDate),
-    h('label', { for: 'bw-value' }, `Weight (${units}) `, bwValue),
+    h('label', { for: 'bw-value' }, `Weight (${units})`), stepper(bwValue, 0.5),
     h('button', { type: 'submit', class: 'secondary' }, 'Add'),
   );
   bwForm.addEventListener('submit', async (ev) => {

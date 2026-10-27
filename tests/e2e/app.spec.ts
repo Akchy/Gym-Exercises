@@ -11,6 +11,13 @@ async function createVault(page: Page) {
   await expect(page.getByRole('heading', { name: "Let's set you up" })).toBeVisible();
 }
 
+/** The main nav, opening the hamburger menu first on narrow screens. */
+async function mainNav(page: Page) {
+  const menu = page.getByRole('button', { name: 'Open menu' });
+  if (await menu.isVisible()) await menu.click();
+  return page.getByRole('navigation', { name: 'Main' });
+}
+
 async function onboard(page: Page) {
   await page.getByText('Build muscle').click();
   await page.getByRole('button', { name: 'Next' }).click();
@@ -67,7 +74,7 @@ test.describe('GymFree end-to-end', () => {
   test('fixed plan: learn an exercise in place and come back to the plan', async ({ page }) => {
     await createVault(page);
     await onboard(page);
-    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Plan' }).click();
+    await (await mainNav(page)).getByRole('link', { name: 'Plan' }).click();
     await expect(page.getByRole('heading', { name: 'My weekly plan' })).toBeVisible();
     // Read-only: no form controls until the user chooses to edit
     await expect(page.locator('main input, main select')).toHaveCount(0);
@@ -123,6 +130,13 @@ test.describe('GymFree end-to-end', () => {
 
     await page.getByLabel('Hammer Curl set 1 reps').fill('12');
     await page.getByLabel('Hammer Curl set 1 weight (kg)').fill('14');
+    // Switching theme mid-workout must not wipe what was typed
+    await page.getByRole('button', { name: 'Switch to dark theme' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(page.getByLabel('Hammer Curl set 1 weight (kg)')).toHaveValue('14');
+    await hammer.getByRole('button', { name: 'Increase by 2.5' }).click();
+    await expect(page.getByLabel('Hammer Curl set 1 weight (kg)')).toHaveValue('15');
+    await hammer.getByRole('button', { name: 'Decrease by 2.5' }).click();
     await hammer.getByRole('button', { name: '+ Add set' }).click();
     await page.getByLabel('Hammer Curl set 2 reps').fill('10');
     await page.getByRole('button', { name: 'Save workout' }).click();
@@ -161,7 +175,7 @@ test.describe('GymFree end-to-end', () => {
   test('exercise library shows animations and still images', async ({ page }) => {
     await createVault(page);
     await onboard(page);
-    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Exercises' }).click();
+    await (await mainNav(page)).getByRole('link', { name: 'Exercises' }).click();
     await page.getByLabel('Muscle group').selectOption('legs');
     await page.getByPlaceholder('Search exercises').fill('squat');
     await expect(page.locator('.exercise-card').first()).toBeVisible();
@@ -199,7 +213,7 @@ test.describe('GymFree end-to-end', () => {
   test('settings: change passphrase, backup round-trip and delete data', async ({ page }) => {
     await createVault(page);
     await onboard(page);
-    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings' }).click();
+    await (await mainNav(page)).getByRole('link', { name: 'Settings' }).click();
 
     await page.getByLabel('Current passphrase').fill(PASS);
     await page.getByLabel('New passphrase', { exact: true }).fill('another long passphrase');
@@ -242,10 +256,22 @@ test.describe('GymFree end-to-end', () => {
     await expect(page.getByRole('heading', { name: 'Hi, Riley' })).toBeVisible();
   });
 
+  test('header fits the screen: no sideways scrolling, menu reachable', async ({ page }) => {
+    await createVault(page);
+    await onboard(page);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    const nav = await mainNav(page);
+    await expect(nav.getByRole('link', { name: 'Settings' })).toBeVisible();
+    await nav.getByRole('link', { name: 'Progress' }).click();
+    await expect(page.getByRole('heading', { name: 'Progress', exact: true })).toBeVisible();
+  });
+
   test('locks on demand', async ({ page }) => {
     await createVault(page);
     await onboard(page);
-    await page.getByRole('button', { name: 'Lock app' }).click();
+    await page.goto('/#/settings');
+    await page.getByRole('button', { name: 'Lock now' }).click();
     await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
     await expect(page.getByText('Riley')).toHaveCount(0);
   });

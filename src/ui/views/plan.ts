@@ -5,7 +5,7 @@ import { weekdayOf } from '../../core/dates';
 import { MUSCLE_GROUPS, WEEKDAY_NAMES, type PlanDay, type PlannedExercise, type Weekday } from '../../core/types';
 import { EXERCISES, filterExercises, getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
-import { h, select } from '../dom';
+import { h, select, stepper } from '../dom';
 import { renderDemo } from '../demo';
 import { MUSCLE_LABELS } from '../labels';
 
@@ -81,7 +81,7 @@ export function renderPlan(ctx: ViewContext): HTMLElement {
 function numberInput(label: string, value: number, min: number, max: number, onSet: (v: number) => void): HTMLElement {
   const input = h('input', { type: 'number', min, max, step: 1, value, 'aria-label': label, class: 'num' });
   input.addEventListener('change', () => onSet(Math.round(clampNumber(input.value, min, max, value))));
-  return input;
+  return stepper(input, max >= 300 ? 15 : 1);
 }
 
 function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {

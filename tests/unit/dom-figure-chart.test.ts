@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { chartGeometry, lineChart } from '../../src/ui/chart';
-import { append, clear, field, h, select, svg, titleCase } from '../../src/ui/dom';
+import { append, clear, field, h, select, stepper, svg, titleCase } from '../../src/ui/dom';
+import { effectiveTheme, getTheme, setTheme, THEME_KEY } from '../../src/ui/theme';
 import { prefersReducedMotion, renderFigure } from '../../src/ui/figure';
 import { MOTIONS, type MotionId } from '../../src/data/motions';
 
@@ -124,5 +125,72 @@ describe('chart', () => {
     expect(el.querySelector('svg')?.getAttribute('aria-label')).toBe('Bench');
     expect(el.querySelectorAll('circle')).toHaveLength(2);
     expect(el.querySelector('figcaption')?.textContent).toBe('2026-01-01: 1 kg → 2026-01-02: 2 kg');
+  });
+});
+
+describe('stepper', () => {
+  const make = (attrs: Record<string, string | number> = {}, step?: number) => {
+    const input = h('input', { type: 'number', 'aria-label': 'reps', ...attrs });
+    const onChange = vi.fn();
+    input.addEventListener('change', onChange);
+    const wrap = stepper(input, step);
+    const [dec, inc] = wrap.querySelectorAll('button');
+    return { input, wrap, dec, inc, onChange };
+  };
+
+  it('wraps the input with labelled themed buttons', () => {
+    const { wrap, dec, inc, input } = make();
+    expect(wrap.className).toBe('stepper');
+    expect(wrap.children[1]).toBe(input);
+    expect(dec.getAttribute('aria-label')).toBe('Decrease by 1');
+    expect(inc.getAttribute('aria-label')).toBe('Increase by 1');
+    expect(inc.type).toBe('button');
+  });
+
+  it('steps, snaps to the grid, clamps and fires change', () => {
+    const { input, dec, inc, onChange } = make({ min: 0, max: 20, value: 7.3 }, 2.5);
+    inc.click();
+    expect(input.value).toBe('7.5');
+    expect(onChange).toHaveBeenCalledOnce();
+    inc.click();
+    expect(input.value).toBe('10');
+    for (let i = 0; i < 10; i++) inc.click();
+    expect(input.value).toBe('20');
+    input.value = '1';
+    dec.click();
+    dec.click();
+    expect(input.value).toBe('0');
+  });
+
+  it('starts empty fields from the placeholder or min', () => {
+    const a = make({ placeholder: '40' }, 2.5);
+    a.inc.click();
+    expect(a.input.value).toBe('40');
+    const b = make({ min: 13, max: 110 });
+    b.inc.click();
+    expect(b.input.value).toBe('13');
+  });
+
+  it('lets field() label the wrapped input', () => {
+    const { wrap, input } = make();
+    const f = field('Age', wrap);
+    expect(f.querySelector('label')!.htmlFor).toBe(input.id);
+  });
+});
+
+describe('theme', () => {
+  it('stores light/dark, clears for system and applies to <html>', () => {
+    setTheme('dark');
+    expect(getTheme()).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(effectiveTheme()).toBe('dark');
+    setTheme('light');
+    expect(effectiveTheme()).toBe('light');
+    setTheme('system');
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    localStorage.setItem(THEME_KEY, 'neon');
+    expect(getTheme()).toBe('system');
+    localStorage.removeItem(THEME_KEY);
   });
 });
