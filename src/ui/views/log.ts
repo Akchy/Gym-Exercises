@@ -7,7 +7,7 @@ import { EXERCISES, getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
 import { clear, h, stepper } from '../dom';
 import { renderDemo } from '../demo';
-import { prescriptionText } from './plan';
+import { exerciseOptions, prescriptionText } from './plan';
 
 /** Heaviest weight from the most recent session of an exercise (to prefill the form). */
 export function lastWeight(workouts: readonly WorkoutLog[], exerciseId: string): number {
@@ -198,7 +198,7 @@ export function renderLogForm(ctx: ViewContext, dayId: string): HTMLElement {
   };
   renderEntries();
 
-  const picker = h('select', { 'aria-label': 'Add exercise' }, h('option', { value: '' }, '+ Add another exercise…'), ...EXERCISES.map((ex) => h('option', { value: ex.id }, ex.name)));
+  const picker = h('select', { 'aria-label': 'Add exercise' }, h('option', { value: '' }, '+ Add another exercise…'), ...exerciseOptions(EXERCISES));
   picker.addEventListener('change', () => {
     if (!getExercise(picker.value)) return;
     entries.push({ exerciseId: picker.value, target: null, sets: [{ reps: null, weightKg: null }] });

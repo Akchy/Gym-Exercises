@@ -52,6 +52,8 @@ export class App {
   private readonly mainEl: HTMLElement;
   private themeBtn: HTMLButtonElement | null = null;
   private header: HTMLElement | null = null;
+  /** Route of the last rendered view: re-rendering the same page keeps the scroll position. */
+  private renderedPath: string | null = null;
   private readonly stopStatus: () => void;
   private readonly stopData: () => void;
 
@@ -317,6 +319,7 @@ export class App {
   async render(): Promise<void> {
     clear(this.mainEl);
     if (!this.state) {
+      this.renderedPath = null;
       this.mainEl.appendChild(this.renderEntry());
       return;
     }
@@ -356,6 +359,8 @@ export class App {
         view = h('main', { class: 'container' }, h('h1', {}, 'Page not found'), h('a', { href: '#/' }, 'Go home'));
     }
     this.mainEl.append(this.nav(path), view);
+    if (path === this.renderedPath) return;
+    this.renderedPath = path;
     const scrollTo = this.win.scrollTo?.bind(this.win);
     try {
       scrollTo?.(0, 0);

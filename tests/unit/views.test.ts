@@ -122,6 +122,26 @@ describe('plan editor', () => {
     expect(root.querySelector('.plan-day tbody a')?.getAttribute('href')).toMatch(/\?from=plan-edit$/);
   });
 
+  it('groups the exercise picker under muscle headers', () => {
+    check(root.querySelector<HTMLInputElement>('.plan-day input[id^="all-"]')!, true);
+    const picker = root.querySelector<HTMLSelectElement>('.plan-day select[aria-label^="Add exercise"]')!;
+    const groups = [...picker.querySelectorAll('optgroup')];
+    expect(groups.map((g) => g.label)).toEqual(expect.arrayContaining(['Chest', 'Legs', 'Cardio']));
+    expect(groups.find((g) => g.label === 'Cardio')!.querySelector('option[value="burpee"]')?.textContent).toBe('Burpee');
+  });
+
+  it('keeps the scroll position when an edit re-renders the page', async () => {
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    change(root.querySelector<HTMLSelectElement>('.plan-day select[aria-label^="Add exercise"]')!, 'burpee');
+    check(root.querySelector<HTMLInputElement>('.plan-day input[id^="all-"]')!, true);
+    change(root.querySelector<HTMLSelectElement>('.plan-day select[aria-label^="Add exercise"]')!, 'burpee');
+    await settle(app);
+    expect(state().plan[0].exercises.at(-1)?.exerciseId).toBe('burpee');
+    expect(scrollTo).not.toHaveBeenCalled();
+    await go(app, '/plan');
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
   it('renames a day and changes its weekday', async () => {
     change(root.querySelector<HTMLInputElement>('.day-name')!, '  Chest Day  ');
     await settle(app);

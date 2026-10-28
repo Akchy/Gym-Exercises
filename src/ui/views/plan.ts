@@ -3,7 +3,7 @@ import { generatePlan, prescription, refillDay } from '../../core/planner';
 import { clampNumber, cleanText, MAX_NAME } from '../../core/state';
 import { weekdayOf } from '../../core/dates';
 import { MUSCLE_GROUPS, WEEKDAY_NAMES, type PlanDay, type PlannedExercise, type Weekday } from '../../core/types';
-import { EXERCISES, filterExercises, getExercise } from '../../data/exercises';
+import { EXERCISES, filterExercises, getExercise, type Exercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
 import { h, select, stepper } from '../dom';
 import { renderDemo } from '../demo';
@@ -44,6 +44,14 @@ export function exerciseItem(ctx: ViewContext, pe: PlannedExercise, from: string
     );
   });
   return h('li', {}, details);
+}
+
+/** Exercise picker options under one small header per primary muscle, in muscle-group order. */
+export function exerciseOptions(list: readonly Exercise[]): HTMLElement[] {
+  return MUSCLE_GROUPS.flatMap((g) => {
+    const group = list.filter((ex) => ex.primary === g);
+    return group.length ? [h('optgroup', { label: MUSCLE_LABELS[g] }, ...group.map((ex) => h('option', { value: ex.id }, ex.name)))] : [];
+  });
 }
 
 function orderedDays(plan: readonly PlanDay[]): PlanDay[] {
@@ -156,12 +164,9 @@ function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {
     const list = showAll.checked
       ? EXERCISES
       : day.muscleGroups.flatMap((g) => filterExercises({ muscle: g, equipment: state.routine.equipment }));
-    const seen = new Set(day.exercises.map((x) => x.exerciseId));
-    for (const ex of list) {
-      if (seen.has(ex.id)) continue;
-      seen.add(ex.id);
-      picker.appendChild(h('option', { value: ex.id }, `${ex.name} (${MUSCLE_LABELS[ex.primary]})`));
-    }
+    const taken = new Set(day.exercises.map((x) => x.exerciseId));
+    const fresh = [...new Map(list.map((ex) => [ex.id, ex])).values()].filter((ex) => !taken.has(ex.id));
+    picker.append(...exerciseOptions(fresh));
   };
   fillPicker();
   showAll.addEventListener('change', fillPicker);
