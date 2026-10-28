@@ -158,6 +158,57 @@ describe('App: first run', () => {
   });
 });
 
+describe('App: links opened before choosing where the data lives', () => {
+  async function finishOnboarding(app: Awaited<ReturnType<typeof makeApp>>['app'], root: HTMLElement) {
+    for (let i = 0; i < 3; i++) byText(root, 'button', 'Next').click();
+    byText(root, 'button', 'Save my plan').click();
+    await settle(app, 12);
+  }
+
+  it('shows "Page not found" for unknown pages, and the first screen for real ones', async () => {
+    const { app, root } = await makeApp(undefined, { hash: '#/exercise' });
+    expect(root.querySelector('h1')?.textContent).toBe('Oops! Sorry, page not found');
+    expect(root.querySelector('.nf-art')?.getAttribute('aria-label')).toMatch(/404/);
+    expect(byText<HTMLAnchorElement>(root, 'a', 'Go to the start').getAttribute('href')).toBe('#/');
+    expect(root.textContent).not.toContain('Exercise library');
+    await go(app, '/exercises');
+    expect(root.querySelector('h1')?.textContent).toBe('Your gym plan, built around your week.');
+  });
+
+  it('opens the linked page after setting up without an account', async () => {
+    const { app, root } = await makeApp(undefined, { hash: '#/exercises/push-up' });
+    byText(root, 'button', 'Use without an account').click();
+    await settle(app);
+    expect(window.location.hash).toBe('#/onboarding');
+    await finishOnboarding(app, root);
+    expect(window.location.hash).toBe('#/exercises/push-up');
+    expect(root.querySelector('main h1')?.textContent).toBe('Push-up');
+  });
+
+  it('forgets the link when the user goes home first', async () => {
+    const { app, root } = await makeApp(undefined, { hash: '#/progress' });
+    await go(app, '/');
+    byText(root, 'button', 'Use without an account').click();
+    await settle(app);
+    await finishOnboarding(app, root);
+    expect(window.location.hash).toBe('#/');
+  });
+
+  it('opens the linked page after coming back from Google sign-in', async () => {
+    const cloud = new FakeCloud();
+    const { app, root } = await makeApp(undefined, { cloud, hash: '#/progress' });
+    byText(root, 'button', 'Continue with Google').click();
+    await settle(app);
+    expect(cloud.signIns).toBe(1);
+    // Google sends the user back to the base URL, without the hash.
+    const back = signedIn();
+    const { root: root2 } = await makeApp(undefined, { cloud: back, keepSession: true });
+    expect(window.location.hash).toBe('#/progress');
+    expect(root2.querySelector('main h1')?.textContent).toBe('Progress');
+    expect(sessionStorage.getItem('gymx:returnTo')).toBeNull();
+  });
+});
+
 describe('App: everyday use', () => {
   it('has a theme toggle and no lock button in the header', async () => {
     localStorage.removeItem('gymx:theme');
@@ -204,7 +255,9 @@ describe('App: everyday use', () => {
 
     const { app: app2, root: root2 } = await makeApp(onboardedState());
     await go(app2, '/nowhere');
-    expect(root2.querySelector('h1')?.textContent).toBe('Page not found');
+    expect(root2.querySelector('h1')?.textContent).toBe('Oops! Sorry, page not found');
+    expect(root2.textContent).toContain('You tried to open #/nowhere');
+    expect(byText<HTMLAnchorElement>(root2, 'a', 'Exercise library').getAttribute('href')).toBe('#/exercises');
   });
 
   it('routes to every section', async () => {

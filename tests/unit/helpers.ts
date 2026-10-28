@@ -32,13 +32,14 @@ let current: App | null = null;
 
 /**
  * Starts the app on a clean device. `initial` is stored as "use without an account" data;
- * pass a FakeCloud to build the app with Google sign-in enabled.
+ * pass a FakeCloud to build the app with Google sign-in enabled, and `hash` to open a link.
  */
-export async function makeApp(initial?: AppState, opts: { cloud?: FakeCloud } = {}) {
+export async function makeApp(initial?: AppState, opts: { cloud?: FakeCloud; hash?: string; keepSession?: boolean } = {}) {
   current?.dispose();
   document.body.innerHTML = '<div id="app"></div>';
-  window.location.hash = '';
+  window.location.hash = opts.hash ?? '';
   localStorage.clear();
+  if (!opts.keepSession) sessionStorage.clear();
   const root = document.getElementById('app') as HTMLElement;
   const store = new DeviceStore(localStorage);
   if (initial) {

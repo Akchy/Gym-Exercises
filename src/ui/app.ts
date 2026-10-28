@@ -15,6 +15,7 @@ import { effectiveTheme, setTheme, THEME_EVENT } from './theme';
 import { renderDashboard } from './views/dashboard';
 import { renderExerciseDetail, renderExerciseList } from './views/exercises';
 import { renderLogForm, renderLogPicker } from './views/log';
+import { renderNotFound } from './views/notfound';
 import { renderOnboarding } from './views/onboarding';
 import { renderPlan, renderPlanEditor } from './views/plan';
 import { renderProgress } from './views/progress';
@@ -36,6 +37,14 @@ const NAV = [
   ['/progress', 'Progress'],
   ['/settings', 'Settings'],
 ] as const;
+
+/** First path segment of every page; anything else is "Page not found". */
+const SECTIONS = new Set(['', 'onboarding', 'plan', 'exercises', 'log', 'progress', 'settings']);
+/**
+ * The page a link pointed to before the welcome screen. Kept in sessionStorage because
+ * Google sign-in leaves the app and comes back to the base URL, without the hash.
+ */
+const RETURN_KEY = 'gymx:returnTo';
 
 export class App {
   private state: AppState | null = null;
@@ -180,6 +189,23 @@ export class App {
     return hash.startsWith('/') ? hash : '/';
   }
 
+  private get returnTo(): string | null {
+    try {
+      return this.win.sessionStorage.getItem(RETURN_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  private set returnTo(path: string | null) {
+    try {
+      if (path) this.win.sessionStorage.setItem(RETURN_KEY, path);
+      else this.win.sessionStorage.removeItem(RETURN_KEY);
+    } catch {
+      /* storage blocked: the link just isn't remembered */
+    }
+  }
+
   navigate(path: string): void {
     if (this.route() === path) void this.render();
     else this.win.location.hash = path;
@@ -316,6 +342,9 @@ export class App {
         this.navigate('/');
       });
     }
+    // Remember a link opened before choosing where the data lives; opening home forgets it.
+    const path = this.route();
+    this.returnTo = path === '/' || path === '/onboarding' ? null : path;
     return renderWelcome({
       signInAvailable: this.repo.signInAvailable,
       onGoogle: () => this.repo.signIn(),
@@ -328,20 +357,27 @@ export class App {
 
   async render(): Promise<void> {
     clear(this.mainEl);
+    const path = this.route();
+    const [pathname, query = ''] = path.split('?');
+    const [, section = '', param = ''] = pathname.split('/');
     if (!this.state) {
       this.renderedPath = null;
-      this.mainEl.appendChild(this.renderEntry());
+      this.mainEl.appendChild(SECTIONS.has(section) ? this.renderEntry() : renderNotFound({ path, hasData: false }));
       return;
     }
-    const path = this.route();
     const ctx = this.context();
     if (!this.state.onboarded && path !== '/onboarding') {
       this.navigate('/onboarding');
       return;
     }
-    const [pathname, query = ''] = path.split('?');
+    // Arriving home after sign-in or onboarding: open the link that brought the user here.
+    const returnTo = this.returnTo;
+    if (returnTo && path === '/') {
+      this.returnTo = null;
+      this.navigate(returnTo);
+      return;
+    }
     const from = new URLSearchParams(query).get('from') ?? undefined;
-    const [, section = '', param = ''] = pathname.split('/');
     let view: HTMLElement;
     switch (section) {
       case '':
@@ -366,7 +402,7 @@ export class App {
         view = renderSettings(ctx);
         break;
       default:
-        view = h('main', { class: 'container' }, h('h1', {}, 'Page not found'), h('a', { href: '#/' }, 'Go home'));
+        view = renderNotFound({ path, hasData: true });
     }
     this.mainEl.append(this.nav(path), view);
     if (path === this.renderedPath) return;
