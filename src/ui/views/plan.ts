@@ -1,5 +1,5 @@
 import { randomId } from '../../core/encoding';
-import { generatePlan, prescription, refillDay } from '../../core/planner';
+import { generatePlan, prescription, refillDay, reshuffleDay } from '../../core/planner';
 import { clampNumber, cleanText, MAX_NAME } from '../../core/state';
 import { weekdayOf } from '../../core/dates';
 import { MUSCLE_GROUPS, WEEKDAY_NAMES, type PlanDay, type PlannedExercise, type Weekday } from '../../core/types';
@@ -54,6 +54,55 @@ export function exerciseOptions(list: readonly Exercise[]): HTMLElement[] {
   });
 }
 
+/** Set only while a swap re-renders, so the exercises that just arrived can animate in. */
+let arriving: { dayId: string; before: ReadonlySet<string> } | null = null;
+
+async function swapExercises(ctx: ViewContext, dayId: string, fn: (d: PlanDay, s: ViewContext['state']) => void): Promise<void> {
+  try {
+    await ctx.update((s) => {
+      const d = s.plan.find((x) => x.id === dayId);
+      if (!d) return;
+      arriving = { dayId, before: new Set(d.exercises.map((x) => x.exerciseId)) };
+      fn(d, s);
+    });
+  } finally {
+    arriving = null;
+  }
+}
+
+/** Staggered flip-in for exercise rows that were not in the day before the swap; the kept anchor stays still. */
+export function animateArrivals(ctx: ViewContext, day: PlanDay, items: HTMLElement[]): HTMLElement[] {
+  if (arriving?.dayId !== day.id || !ctx.animate()) return items;
+  let n = 0;
+  items.forEach((item, i) => {
+    if (arriving?.before.has(day.exercises[i].exerciseId)) return;
+    item.classList.add('shuffle-in');
+    item.style.setProperty('--i', String(n++));
+  });
+  return items;
+}
+
+/** "New exercises": swaps a day's exercises for a fresh set, with an Undo in the toast. */
+export function reshuffleButton(ctx: ViewContext, day: PlanDay): HTMLElement | null {
+  if (!day.muscleGroups.length || !day.exercises.length) return null;
+  const spin = arriving?.dayId === day.id && ctx.animate();
+  const btn = h(
+    'button',
+    { type: 'button', class: 'secondary', 'aria-label': `New exercises for ${day.name}` },
+    h('span', { class: spin ? 'shuffle-icon spinning' : 'shuffle-icon', 'aria-hidden': 'true' }, '🔄'),
+    ' New exercises',
+  );
+  btn.addEventListener('click', async () => {
+    const before = structuredClone(day.exercises);
+    await swapExercises(ctx, day.id, (d, s) => (d.exercises = reshuffleDay(d, s.goal, s.routine, s.profile.experience).exercises));
+    ctx.toast(`New exercises for ${day.name}.`, {
+      label: 'Undo',
+      run: () => void swapExercises(ctx, day.id, (d) => (d.exercises = structuredClone(before))),
+    });
+  });
+  return btn;
+}
+
 function orderedDays(plan: readonly PlanDay[]): PlanDay[] {
   return [...plan].sort((a, b) => (a.weekday ?? 7) - (b.weekday ?? 7));
 }
@@ -78,9 +127,9 @@ export function renderPlan(ctx: ViewContext): HTMLElement {
           day.weekday === today ? h('span', { class: 'badge' }, 'Today') : null,
         ),
         h('p', { class: 'muted' }, day.muscleGroups.map((g) => MUSCLE_LABELS[g]).join(' · ')),
-        h('ul', { class: 'exercise-list' }, ...day.exercises.map((pe) => exerciseItem(ctx, pe, 'plan'))),
+        h('ul', { class: 'exercise-list' }, ...animateArrivals(ctx, day, day.exercises.map((pe) => exerciseItem(ctx, pe, 'plan')))),
         day.cardioMinutes ? h('p', { class: 'muted' }, `+ ${day.cardioMinutes} min cardio of your choice`) : null,
-        h('a', { href: `#/log/${day.id}`, class: 'button primary' }, 'Start this workout'),
+        h('div', { class: 'row' }, h('a', { href: `#/log/${day.id}`, class: 'button primary' }, 'Start this workout'), reshuffleButton(ctx, day)),
       ),
     ),
   );
@@ -124,7 +173,12 @@ function dayCard(ctx: ViewContext, day: PlanDay, index: number): HTMLElement {
   suggest.addEventListener('click', () =>
     ctx.update((s) => {
       const i = s.plan.findIndex((x) => x.id === day.id);
-      if (i >= 0) s.plan[i] = refillDay(s.plan[i], s.goal, s.routine, s.profile.experience);
+      if (i < 0) return;
+      const d = s.plan[i];
+      const fresh = refillDay(d, s.goal, s.routine, s.profile.experience);
+      // Same muscles pressed again: offer a different set instead of the identical suggestion.
+      const same = fresh.exercises.map((e) => e.exerciseId).join() === d.exercises.map((e) => e.exerciseId).join();
+      s.plan[i] = same ? reshuffleDay(d, s.goal, s.routine, s.profile.experience) : fresh;
     }),
   );
 

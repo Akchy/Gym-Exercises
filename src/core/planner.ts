@@ -2,10 +2,11 @@
  * Turns a goal + daily routine into a weekly plan of training days and exercises.
  * Everything produced here is a suggestion: the user can edit every field afterwards.
  */
-import { EXERCISES, isAvailable, type Exercise } from '../data/exercises';
+import { EXERCISES, getExercise, isAvailable, type Exercise } from '../data/exercises';
 import { randomId } from './encoding';
 import {
   EXPERIENCE,
+  MUSCLE_GROUPS,
   type ActivityLevel,
   type Experience,
   type Goal,
@@ -174,6 +175,64 @@ export function candidatesFor(group: MuscleGroup, equipment: Routine['equipment'
   return [...pool].sort((a, b) => Number(b.compound) - Number(a.compound));
 }
 
+const SECONDARY: readonly MuscleGroup[] = ['core', 'cardio'];
+
+/** Candidates for one group; "legs" also draws on glutes and calves unless those were ticked themselves. */
+function poolFor(group: MuscleGroup, groups: readonly MuscleGroup[], equipment: Routine['equipment'], experience: Experience): Exercise[] {
+  const family = group === 'legs' ? (['glutes', 'calves'] as const).filter((g) => !groups.includes(g)) : [];
+  const pool = [group, ...family].flatMap((g) => candidatesFor(g, equipment, experience));
+  return pool.sort((a, b) => Number(b.compound) - Number(a.compound));
+}
+
+type Chooser = (pool: Exercise[], round: number, used: ReadonlySet<string>) => Exercise | undefined;
+
+/**
+ * Fills a day: the main (non-cardio/core) groups take the slots round-robin, then one core
+ * exercise, then one cardio exercise only if there is room (the day has its own cardio minutes).
+ * Group order is normalised, so the order muscles were ticked in doesn't matter.
+ */
+function selectFor(
+  groups: readonly MuscleGroup[],
+  count: number,
+  equipment: Routine['equipment'],
+  experience: Experience,
+  choose: Chooser,
+  seed: Exercise[] = [],
+): Exercise[] {
+  const sorted = MUSCLE_GROUPS.filter((g) => groups.includes(g));
+  const primary = sorted.filter((g) => !SECONDARY.includes(g));
+  const pools = (gs: readonly MuscleGroup[]) => gs.map((g) => poolFor(g, sorted, equipment, experience));
+  const chosen = [...seed];
+  const used = new Set(seed.map((x) => x.id));
+  const fill = (from: Exercise[][], upTo: number) => {
+    for (let round = 0; chosen.length < upTo; round++) {
+      let added = false;
+      for (const pool of from) {
+        if (chosen.length >= upTo) break;
+        const pick = choose(pool, round, used);
+        if (!pick) continue;
+        used.add(pick.id);
+        chosen.push(pick);
+        added = true;
+      }
+      if (!added) break;
+    }
+  };
+  if (!primary.length) {
+    fill(pools(sorted), count);
+    return chosen;
+  }
+  const secondary = sorted.filter((g) => SECONDARY.includes(g));
+  const reserve = (sorted.includes('core') ? 1 : 0) + (sorted.includes('cardio') && count >= 6 ? 1 : 0);
+  const target = Math.min(count, Math.max(1, count - reserve));
+  fill(pools(primary), target);
+  const short = chosen.length < target;
+  for (const g of secondary) fill(pools([g]), Math.min(count, chosen.length + 1));
+  // Only when the main groups ran out of exercises do core/cardio fill the gap.
+  if (short) fill(pools(secondary), count);
+  return chosen;
+}
+
 export function pickExercises(
   groups: MuscleGroup[],
   count: number,
@@ -181,23 +240,10 @@ export function pickExercises(
   experience: Experience,
   variant = 0,
 ): Exercise[] {
-  const pools = groups.map((g) => candidatesFor(g, routine.equipment, experience));
-  const chosen: Exercise[] = [];
-  const used = new Set<string>();
-  for (let round = 0; chosen.length < count && round < 6; round++) {
-    let added = false;
-    for (const pool of pools) {
-      if (chosen.length >= count) break;
-      const remaining = pool.filter((x) => !used.has(x.id));
-      if (!remaining.length) continue;
-      const pick = remaining[(variant + round) % remaining.length];
-      used.add(pick.id);
-      chosen.push(pick);
-      added = true;
-    }
-    if (!added) break;
-  }
-  return chosen;
+  return selectFor(groups, count, routine.equipment, experience, (pool, round, used) => {
+    const remaining = pool.filter((x) => !used.has(x.id));
+    return remaining.length ? remaining[(variant + round) % remaining.length] : undefined;
+  });
 }
 
 export const DEFAULT_TRAINING_DAYS: Weekday[] = [0, 2, 4];
@@ -234,6 +280,32 @@ export function refillDay(day: PlanDay, goal: Goal, routine: Routine, experience
     exerciseId: ex.id,
     ...prescription(goal, experience, ex),
   }));
+  return { ...day, exercises };
+}
+
+/**
+ * Swaps a day's exercises for a fresh set (same muscles, same count). The first main compound
+ * lift stays put with the user's sets/reps/rest; every other slot moves on to the exercises after
+ * the current ones in each pool, so repeated presses walk through the whole pool before repeating.
+ */
+export function reshuffleDay(day: PlanDay, goal: Goal, routine: Pick<Routine, 'equipment'>, experience: Experience): PlanDay {
+  const current = new Set(day.exercises.map((pe) => pe.exerciseId));
+  const secondaryOnly = day.muscleGroups.every((g) => SECONDARY.includes(g));
+  const anchorAt = secondaryOnly
+    ? -1
+    : day.exercises.findIndex((pe) => {
+        const ex = getExercise(pe.exerciseId);
+        return !!ex?.compound && !SECONDARY.includes(ex.primary) && (day.muscleGroups.includes(ex.primary) || (day.muscleGroups.includes('legs') && (ex.primary === 'glutes' || ex.primary === 'calves')));
+      });
+  const anchor = anchorAt >= 0 ? getExercise(day.exercises[anchorAt].exerciseId) : undefined;
+  const picked = selectFor(day.muscleGroups, day.exercises.length, routine.equipment, experience, (pool, _round, used) => {
+    // Start right after the last current exercise of this pool; skip current ones while possible.
+    const start = pool.reduce((at, x, i) => (current.has(x.id) ? i + 1 : at), 0);
+    const order = pool.map((_, i) => pool[(start + i) % pool.length]).filter((x) => !used.has(x.id));
+    return order.find((x) => !current.has(x.id)) ?? order[0];
+  }, anchor ? [anchor] : []);
+  const exercises = picked.slice(anchor ? 1 : 0).map((ex) => ({ exerciseId: ex.id, ...prescription(goal, experience, ex) }));
+  if (anchor) exercises.splice(anchorAt, 0, day.exercises[anchorAt]);
   return { ...day, exercises };
 }
 

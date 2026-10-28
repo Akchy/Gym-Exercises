@@ -2,6 +2,11 @@ import type { Repository } from '../core/sync';
 import type { AppState } from '../core/types';
 import type { InstallManager } from '../pwa/register';
 
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface ViewContext {
   state: AppState;
   /** Where the data is kept (this device or the signed-in account) and its sync status. */
@@ -9,7 +14,8 @@ export interface ViewContext {
   /** Applies a change, saves it and re-renders. */
   update(mutate: (draft: AppState) => void, opts?: { render?: boolean }): Promise<void>;
   navigate(path: string): void;
-  toast(message: string): void;
+  /** Shows a short message; with an action it also offers a button (e.g. Undo). */
+  toast(message: string, action?: ToastAction): void;
   /** Replaces the whole state (e.g. after restoring a backup). */
   replaceState(state: AppState): Promise<void>;
   /** Goes to Google sign-in (the page navigates away). */

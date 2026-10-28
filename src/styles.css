@@ -188,6 +188,7 @@ th, td { text-align: left; padding: 0.35rem; border-bottom: 1px solid var(--bord
 .danger-zone { border-color: var(--danger); }
 
 .toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%) translateY(150%); background: var(--text); color: var(--bg); padding: 0.6rem 1rem; border-radius: 999px; transition: transform 0.25s, opacity 0.25s, visibility 0.25s; z-index: 10; pointer-events: none; opacity: 0; visibility: hidden; }
+.toast button.link { pointer-events: auto; color: inherit; font-weight: 600; }
 .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; visibility: visible; }
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
 
@@ -273,6 +274,17 @@ meter::-webkit-meter-optimum-value { background: var(--accent); }
 .badge { background: var(--accent); color: var(--accent-text); border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.8rem; font-weight: 700; }
 .exercise-list { list-style: none; padding: 0; margin: 0.5rem 0 1rem; }
 .exercise-list > li { border-top: 1px solid var(--border); }
+/* "New exercises": fresh rows flip down into place one after another, like a slot machine. */
+.shuffle-in { animation: shuffle-in 0.55s cubic-bezier(0.2, 0.8, 0.3, 1.25) both; animation-delay: calc(var(--i, 0) * 90ms); transform-origin: top center; }
+@keyframes shuffle-in {
+  0% { opacity: 0; transform: perspective(600px) rotateX(-90deg); }
+  60% { opacity: 1; transform: perspective(600px) rotateX(12deg); }
+  100% { opacity: 1; transform: none; }
+}
+.shuffle-icon { display: inline-block; }
+.shuffle-icon.spinning { animation: shuffle-spin 0.6s ease-out; }
+@keyframes shuffle-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .shuffle-in, .shuffle-icon.spinning { animation: none; } }
 .exercise-item summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0; cursor: pointer; list-style: none; }
 .exercise-item summary::-webkit-details-marker { display: none; }
 .exercise-item summary:hover .ex-hint { background: var(--accent); color: var(--accent-text); }
@@ -304,24 +316,9 @@ input::placeholder { color: var(--muted); opacity: 0.6; }
 .cta { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; }
 .cta button { padding: 0.8rem 1.4rem; font-size: 1.05rem; }
 @media (max-width: 480px) { .cta button { flex: 1 1 100%; } }
-/* Still preview of the app beside the headline (decorative). */
+/* Beside the headline: the exercise roulette. */
 .preview { display: grid; gap: 0.75rem; max-width: 420px; width: 100%; justify-self: center; }
 .preview-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; box-shadow: 0 18px 40px rgb(0 0 0 / 0.1); }
-.preview-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin-bottom: 0.5rem; }
-.preview-head .muted { flex-basis: 100%; }
-.preview-list { list-style: none; margin: 0; padding: 0; }
-.preview-list li { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; border-top: 1px solid var(--border); }
-.preview-list img { width: 52px; height: 40px; object-fit: cover; border-radius: 8px; flex: none; background: var(--border); }
-.preview-name { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.3; }
-.preview-check { width: 1.4rem; height: 1.4rem; border-radius: 999px; border: 2px solid var(--border); flex: none; }
-.preview-check.done { background: var(--accent) var(--tick) no-repeat center / 0.85rem; border-color: var(--accent); }
-.preview-week { margin-left: 2.5rem; }
-.preview-week-head { display: flex; flex-direction: column; margin-bottom: 0.6rem; }
-.preview-bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.4rem; align-items: end; }
-.preview-bar { display: grid; justify-items: center; gap: 0.25rem; }
-.preview-bar .fill { width: 100%; height: 3.5rem; border-radius: 6px; background: linear-gradient(to top, var(--accent-soft) var(--h, 0%), transparent var(--h, 0%)), var(--bg); }
-.preview-bar .fill.done { background: linear-gradient(to top, var(--accent) var(--h, 0%), transparent var(--h, 0%)), var(--bg); }
-@media (max-width: 480px) { .preview-week { margin-left: 0; } }
 .features { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); padding: 1rem 0 2.5rem; }
 .feature { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
 .feature h2 { font-size: 1.1rem; margin: 0.5rem 0 0.35rem; }
@@ -336,3 +333,32 @@ input::placeholder { color: var(--muted); opacity: 0.6; }
 .promise p { margin: 0; }
 .landing-footer { padding: 2rem 0 0; text-align: center; }
 .link-card .badge.in-progress { align-self: flex-start; margin-top: 0.4rem; }
+
+/* ---------- Exercise roulette (home page toy) ---------- */
+.today-row { display: grid; gap: 0 0.75rem; }
+/* Side by side (equal heights) on wide screens; the wheel stacks below on mobile. */
+@media (min-width: 720px) { .today-row { grid-template-columns: 1fr 300px; align-items: stretch; } }
+.wheel-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; text-align: center; }
+.wheel { position: relative; width: min(220px, 100%); aspect-ratio: 1; flex: 0 0 auto; }
+.wheel-disc { width: 100%; height: 100%; display: block; transition-property: transform; transition-timing-function: cubic-bezier(0.12, 0.7, 0.08, 1); }
+.wheel-slice { fill: var(--accent); }
+.wheel-slice.alt { fill: var(--accent-soft); }
+.wheel-label { fill: var(--accent-text); font-size: 10px; font-weight: 700; }
+.wheel-label.alt { fill: var(--text); }
+.wheel-rim { fill: none; stroke: var(--border); stroke-width: 3; }
+.wheel-hub { fill: var(--surface); stroke: var(--accent); stroke-width: 3; }
+.wheel-pointer {
+  position: absolute; top: -6px; left: 50%; z-index: 1; transform: translateX(-50%);
+  border: 10px solid transparent; border-top: 18px solid var(--danger); border-bottom: 0;
+}
+.wheel-body { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
+.wheel-body h2, .wheel-result { margin: 0; }
+.wheel-result { min-height: 3em; }
+.wheel-result.revealed { animation: wheel-reveal 0.45s cubic-bezier(0.2, 0.8, 0.3, 1.3); }
+.wheel-demo { width: 100%; max-width: 420px; text-align: left; }
+.wheel-demo:empty { display: none; }
+.wheel-demo h3 { margin: 0.25rem 0 0.5rem; }
+.wheel-demo .figure-demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.5rem; }
+.wheel-demo > * { animation: wheel-reveal 0.35s ease-out; }
+@keyframes wheel-reveal { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .wheel-disc { transition: none; } .wheel-result.revealed, .wheel-demo > * { animation: none; } }

@@ -6,6 +6,8 @@ import { getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
 import { h } from '../dom';
 import { MUSCLE_LABELS } from '../labels';
+import { animateArrivals, reshuffleButton } from './plan';
+import { renderSpinWheel } from './wheel';
 
 export function nextPlanDay(plan: readonly PlanDay[], todayWeekday: number): { day: PlanDay; inDays: number } | null {
   const scheduled = plan.filter((d) => d.weekday !== null);
@@ -43,12 +45,17 @@ export function renderDashboard(ctx: ViewContext): HTMLElement {
       h(
         'ul',
         { class: 'compact' },
-        ...day.exercises.slice(0, 6).map((pe) => {
+        ...animateArrivals(ctx, day, day.exercises.slice(0, 6).map((pe) => {
           const ex = getExercise(pe.exerciseId);
           return h('li', {}, h('a', { href: `#/exercises/${pe.exerciseId}?from=home` }, ex?.name ?? pe.exerciseId), ` · ${pe.sets} × ${pe.repsMin}–${pe.repsMax}`);
-        }),
+        })),
       ),
-      h('a', { href: `#/log/${day.id}`, class: 'button primary' }, inDays === 0 && !doneToday ? 'Start workout' : 'Log this workout'),
+      h(
+        'div',
+        { class: 'row' },
+        h('a', { href: `#/log/${day.id}`, class: 'button primary' }, inDays === 0 && !doneToday ? 'Start workout' : 'Log this workout'),
+        reshuffleButton(ctx, day),
+      ),
     );
   }
 
@@ -69,7 +76,7 @@ export function renderDashboard(ctx: ViewContext): HTMLElement {
     installCard,
     h('h1', {}, state.profile.name ? `Hi, ${state.profile.name}` : 'Your training'),
     h('p', { class: 'muted' }, `Goal: ${GOAL_PROFILES[state.goal].label}`),
-    todayCard,
+    h('div', { class: 'today-row' }, todayCard, renderSpinWheel()),
     h(
       'section',
       { class: 'stats', 'aria-label': 'Quick stats' },

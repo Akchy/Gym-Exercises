@@ -1,7 +1,6 @@
 import type { AppState } from '../../core/types';
-import { getExercise } from '../../data/exercises';
-import { photoUrls } from '../../data/photos';
 import { h } from '../dom';
+import { renderSpinWheel } from './wheel';
 
 export interface WelcomeOptions {
   /** False when Supabase isn't configured or couldn't be reached: Google sign-in is shown disabled. */
@@ -13,53 +12,11 @@ export interface WelcomeOptions {
 
 const SIGN_IN_UNAVAILABLE = 'Google sign-in is unavailable right now. You can still use GymFree without an account.';
 
-/** A still preview of the app (today's workout + this week), drawn with the app's own styles. */
-function appPreview(): HTMLElement {
-  const rows: [string, string, boolean][] = [
-    ['push-up', '3 × 8–12', true],
-    ['dumbbell-shoulder-press', '3 × 8–12', true],
-    ['bench-dip', '3 × 10–15', false],
-  ];
-  const week: [string, number, boolean][] = [
-    ['M', 0.7, true], ['T', 0, false], ['W', 0.9, true], ['T', 0, false], ['F', 0.45, false], ['S', 0, false], ['S', 0, false],
-  ];
-  return h(
-    'div',
-    { class: 'preview', 'aria-hidden': 'true' },
-    h(
-      'div',
-      { class: 'preview-card' },
-      h('div', { class: 'preview-head' }, h('span', { class: 'badge' }, 'Today'), h('strong', {}, 'Push day'), h('span', { class: 'muted small' }, 'Chest · Shoulders · Triceps')),
-      h(
-        'ul',
-        { class: 'preview-list' },
-        ...rows.map(([id, dose, done]) => {
-          const photo = photoUrls(id)?.[0];
-          return h(
-            'li',
-            {},
-            photo ? h('img', { src: photo, alt: '', loading: 'lazy', decoding: 'async' }) : null,
-            h('span', { class: 'preview-name' }, h('strong', {}, getExercise(id)?.name ?? id), h('span', { class: 'muted small' }, dose)),
-            h('span', { class: `preview-check${done ? ' done' : ''}` }),
-          );
-        }),
-      ),
-    ),
-    h(
-      'div',
-      { class: 'preview-card preview-week' },
-      h('div', { class: 'preview-week-head' }, h('strong', {}, 'This week'), h('span', { class: 'muted small' }, '2 of 3 workouts · 🔥 4-week streak')),
-      h(
-        'div',
-        { class: 'preview-bars' },
-        ...week.map(([day, height, done]) => {
-          const fill = h('span', { class: `fill${done ? ' done' : ''}` });
-          fill.style.setProperty('--h', `${Math.round(height * 100)}%`); // CSSOM, allowed by the strict CSP
-          return h('span', { class: 'preview-bar' }, fill, h('span', { class: 'muted small' }, day));
-        }),
-      ),
-    ),
-  );
+/** Beside the headline: the exercise roulette visitors can play with. */
+function heroWheel(): HTMLElement {
+  const wheel = renderSpinWheel({ inlineDemo: true });
+  wheel.classList.add('preview-card');
+  return h('div', { class: 'preview' }, wheel);
 }
 
 const FEATURES = [
@@ -108,7 +65,7 @@ export function renderWelcome(opts: WelcomeOptions): HTMLElement {
         h('div', { class: 'cta' }, google, local),
         note,
       ),
-      appPreview(),
+      heroWheel(),
     ),
     h(
       'section',

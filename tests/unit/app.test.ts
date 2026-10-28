@@ -150,10 +150,10 @@ describe('App: first run', () => {
     expect(byText<HTMLButtonElement>(root, 'button', 'Use without an account').disabled).toBe(false);
   });
 
-  it('shows a still preview, not an animation', async () => {
+  it('shows the exercise roulette, with no animation until it is played', async () => {
     const { root } = await makeApp();
-    expect(root.querySelector('.preview')).not.toBeNull();
-    expect(root.querySelectorAll('.preview-list li')).toHaveLength(3);
+    expect(root.querySelector('.preview .wheel-card')).not.toBeNull();
+    expect(root.querySelectorAll('.wheel-slice')).toHaveLength(8);
     expect(root.querySelector('.demo.animated, animate, svg animate')).toBeNull();
   });
 });

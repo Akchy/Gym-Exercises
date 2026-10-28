@@ -36,6 +36,7 @@ describe('dashboard', () => {
     expect(root.querySelector('#today-title')?.textContent).toBe("Today's workout");
     expect(byText(root, 'a', 'Start workout').getAttribute('href')).toBe(`#/log/${state().plan[0].id}`);
     expect(root.querySelector('.stats')?.textContent).toContain('0/3');
+    expect(root.querySelector(`.highlight button[aria-label="New exercises for ${state().plan[0].name}"]`)).not.toBeNull();
     expect(root.textContent).toContain('kcal');
   });
 
@@ -108,6 +109,29 @@ describe('plan (read-only)', () => {
     expect(root.textContent).toContain('Your plan is empty');
   });
 
+  it('swaps in new exercises and can undo it', async () => {
+    const before = state().plan[0].exercises.map((e) => e.exerciseId);
+    const section = root.querySelector('section.plan-view')!;
+    section.querySelector<HTMLButtonElement>(`button[aria-label="New exercises for ${state().plan[0].name}"]`)!.click();
+    await settle(app);
+    const after = state().plan[0].exercises.map((e) => e.exerciseId);
+    expect(after).toHaveLength(before.length);
+    expect(after).not.toEqual(before);
+    // Only the newly arrived rows flip in; kept exercises stay still.
+    const rows = [...root.querySelectorAll('section.plan-view')[0].querySelectorAll('.exercise-list > li')];
+    expect(rows.map((li) => li.classList.contains('shuffle-in'))).toEqual(after.map((id) => !before.includes(id)));
+    expect(root.querySelector('section.plan-view .shuffle-icon.spinning')).not.toBeNull();
+    byText(root, '.toast button', 'Undo').click();
+    await settle(app);
+    expect(state().plan[0].exercises.map((e) => e.exerciseId)).toEqual(before);
+  });
+
+  it('hides "New exercises" for days without muscles or exercises', async () => {
+    await app['context']().update((s) => (s.plan[0].muscleGroups = []));
+    expect(root.querySelectorAll('section.plan-view')[0].textContent).not.toContain('New exercises');
+    expect(root.querySelectorAll('section.plan-view')[1].textContent).toContain('New exercises');
+  });
+
   it('formats prescriptions', () => {
     expect(prescriptionText({ sets: 3, repsMin: 8, repsMax: 12, restSec: 90 })).toBe('3 sets × 8–12 reps · 90 s rest');
     expect(prescriptionText({ sets: 5, repsMin: 5, repsMax: 5, restSec: 180 })).toBe('5 sets × 5 reps · 180 s rest');
@@ -167,6 +191,17 @@ describe('plan editor', () => {
     byText(root, 'button', 'Suggest exercises for these muscles').click();
     await settle(app);
     expect(state().plan[0].exercises.map((e) => e.exerciseId)).toEqual(['calf-raise']);
+  });
+
+  it('suggests a different set when pressed again for the same muscles', async () => {
+    const press = async () => {
+      byText(root, 'button', 'Suggest exercises for these muscles').click();
+      await settle(app);
+      return state().plan[0].exercises.map((e) => e.exerciseId).join();
+    };
+    const first = await press();
+    const second = await press();
+    expect(second).not.toBe(first);
   });
 
   it('edits sets, reps and rest with clamping', async () => {

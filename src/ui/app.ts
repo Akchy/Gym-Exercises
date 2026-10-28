@@ -7,7 +7,7 @@ import { toISODate } from '../core/dates';
 import { sanitizeState } from '../core/state';
 import type { Repository } from '../core/sync';
 import type { AppState } from '../core/types';
-import type { ViewContext } from './context';
+import type { ToastAction, ViewContext } from './context';
 import type { InstallManager } from '../pwa/register';
 import { clear, h, svg } from './dom';
 import { prefersReducedMotion } from './figure';
@@ -49,6 +49,7 @@ export class App {
   private readonly win: Window;
   private readonly install?: InstallManager;
   private readonly toastEl: HTMLElement;
+  private toastTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly mainEl: HTMLElement;
   private themeBtn: HTMLButtonElement | null = null;
   private header: HTMLElement | null = null;
@@ -184,10 +185,19 @@ export class App {
     else this.win.location.hash = path;
   }
 
-  toast(message: string): void {
-    this.toastEl.textContent = message;
+  toast(message: string, action?: ToastAction): void {
+    this.toastEl.replaceChildren(message);
+    if (action) {
+      const btn = h('button', { type: 'button', class: 'link' }, action.label);
+      btn.addEventListener('click', () => {
+        this.toastEl.classList.remove('show');
+        action.run();
+      });
+      this.toastEl.append(' ', btn);
+    }
     this.toastEl.classList.add('show');
-    setTimeout(() => this.toastEl.classList.remove('show'), 3500);
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => this.toastEl.classList.remove('show'), action ? 8000 : 3500);
   }
 
   /** Waits for background uploads (used by tests). */
@@ -244,7 +254,7 @@ export class App {
         await this.reset();
       },
       navigate: (p) => this.navigate(p),
-      toast: (m) => this.toast(m),
+      toast: (m, a) => this.toast(m, a),
       today: () => toISODate(this.now()),
       animate: () => (this.state?.settings.animations ?? true) && !prefersReducedMotion(),
       install: this.install,

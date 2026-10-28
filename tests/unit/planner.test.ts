@@ -10,10 +10,11 @@ import {
   pickExercises,
   prescription,
   refillDay,
+  reshuffleDay,
   routineAdvice,
   suggestFocus,
 } from '../../src/core/planner';
-import { GOALS, type Routine, type Profile } from '../../src/core/types';
+import { GOALS, type PlanDay, type Routine, type Profile } from '../../src/core/types';
 import { getExercise, isAvailable } from '../../src/data/exercises';
 
 const routine: Routine = {
@@ -166,6 +167,81 @@ describe('refillDay', () => {
     const [day] = generatePlan('gain-muscle', routine, profile);
     const r = refillDay({ ...day, muscleGroups: ['cardio'] }, 'gain-muscle', routine, 'beginner');
     expect(r.exercises.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('primary-group weighting', () => {
+  const gym: Routine = { ...routine, equipment: ['bodyweight', 'dumbbell', 'barbell', 'machine', 'kettlebell'] };
+  it('lets legs dominate a cardio + core + legs day', () => {
+    const picked = pickExercises(['cardio', 'core', 'legs'], 5, gym, 'intermediate').map((x) => x.primary);
+    expect(picked).toHaveLength(5);
+    expect(picked.filter((g) => g === 'core')).toHaveLength(1);
+    expect(picked.filter((g) => g === 'cardio')).toHaveLength(0);
+    expect(picked.filter((g) => ['legs', 'glutes', 'calves'].includes(g)).length).toBe(4);
+  });
+  it('adds one cardio exercise only on long days', () => {
+    const picked = pickExercises(['cardio', 'core', 'chest', 'back'], 7, gym, 'intermediate').map((x) => x.primary);
+    expect(picked.filter((g) => g === 'cardio')).toHaveLength(1);
+    expect(picked.filter((g) => g === 'core')).toHaveLength(1);
+  });
+  it('ignores the order the groups were ticked in', () => {
+    const ids = (gs: Parameters<typeof pickExercises>[0]) => pickExercises(gs, 6, gym, 'intermediate').map((x) => x.id);
+    expect(ids(['legs', 'core', 'cardio', 'chest'])).toEqual(ids(['cardio', 'chest', 'core', 'legs']));
+  });
+  it('keeps cardio/core-only days as before', () => {
+    const picked = pickExercises(['cardio', 'core'], 4, gym, 'intermediate').map((x) => x.primary);
+    expect(picked).toEqual(['core', 'cardio', 'core', 'cardio']);
+  });
+  it('draws glutes and calves into a legs day', () => {
+    const picked = pickExercises(['legs'], 5, { equipment: ['bodyweight'] }, 'intermediate').map((x) => x.primary);
+    expect(picked).toContain('glutes');
+    expect(picked).toContain('calves');
+    expect(picked[0]).toBe('legs');
+  });
+});
+
+describe('reshuffleDay', () => {
+  const gym: Routine = { ...routine, equipment: ['bodyweight', 'dumbbell', 'barbell', 'machine', 'kettlebell'] };
+  const legDay = (): PlanDay => {
+    const day = generatePlan('gain-muscle', { ...gym, trainingDays: [0, 2, 4] }, { experience: 'intermediate' })[2];
+    expect(day.name).toBe('Legs');
+    day.exercises[0] = { ...day.exercises[0], sets: 7, repsMin: 4, repsMax: 6, restSec: 200 };
+    return day;
+  };
+  const ids = (d: PlanDay) => d.exercises.map((e) => e.exerciseId);
+  it('keeps the anchor lift with its numbers and swaps the rest', () => {
+    const day = legDay();
+    const next = reshuffleDay(day, 'gain-muscle', gym, 'intermediate');
+    expect(next.id).toBe(day.id);
+    expect(next.muscleGroups).toEqual(day.muscleGroups);
+    expect(next.exercises).toHaveLength(day.exercises.length);
+    expect(next.exercises[0]).toEqual(day.exercises[0]);
+    const before = new Set(ids(day));
+    const fresh = ids(next).slice(1).filter((id) => !before.has(id));
+    expect(fresh.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(ids(next)).size).toBe(next.exercises.length);
+  });
+  it('produces a different set on every press until the pool cycles', () => {
+    let day = legDay();
+    const seen = [ids(day).join()];
+    for (let i = 0; i < 3; i++) {
+      day = reshuffleDay(day, 'gain-muscle', gym, 'intermediate');
+      expect(seen).not.toContain(ids(day).join());
+      seen.push(ids(day).join());
+    }
+  });
+  it('anchors on the first main compound lift, not core or cardio', () => {
+    const day: PlanDay = {
+      id: 'd', name: 'Mix', weekday: null, muscleGroups: ['core', 'legs'], cardioMinutes: 0,
+      exercises: ['mountain-climber', 'leg-extension', 'goblet-squat', 'lunge'].map((exerciseId) => ({ exerciseId, sets: 3, repsMin: 10, repsMax: 12, restSec: 60 })),
+    };
+    const next = reshuffleDay(day, 'general-fitness', gym, 'intermediate');
+    expect(next.exercises[2]).toEqual(day.exercises[2]);
+    expect(next.exercises).toHaveLength(4);
+  });
+  it('leaves empty days alone', () => {
+    const day: PlanDay = { id: 'd', name: 'x', weekday: null, muscleGroups: ['legs'], exercises: [], cardioMinutes: 0 };
+    expect(reshuffleDay(day, 'gain-muscle', gym, 'beginner').exercises).toEqual([]);
   });
 });
 
