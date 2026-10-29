@@ -36,13 +36,19 @@ interface Card {
   workedMs: number;
   runningSince: number | null;
   restEndsAt: number | null;
+  /** Rest between sets: the plan's, changed with the −/+ buttons during a rest. */
+  restSec: number;
 }
 
 const DEFAULT_REST_SEC = 90;
 const MAX_GAP_MS = 60 * 60 * 1000;
+/** Added to the page's viewport while workout mode is open, so it can't be zoomed. */
+const NO_ZOOM = ', maximum-scale=1, user-scalable=no';
 /** The newest workout screen; one replaced by a re-render must not save over it. */
 let latestView = 0;
 const SWIPE_PX = 50;
+const REST_STEP_SEC = 15;
+const MAX_REST_SEC = 600;
 
 /** mm:ss for a number of seconds. */
 export function clock(sec: number): string {
@@ -86,7 +92,7 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
     const sets = e.sets.filter((s) => (s.reps ?? 0) > 0).map((s) => ({ reps: s.reps as number, weightKg: s.weightKg ?? 0 }));
     const prev = sets.at(-1);
     const next = prev ? { ...prev } : { reps: target?.repsMin ?? 10, weightKg: lastWeight(state.workouts, ex.id) };
-    return [{ ex, target, sets, next, mode: 'idle' as Mode, workedMs: 0, runningSince: null, restEndsAt: null }];
+    return [{ ex, target, sets, next, mode: 'idle' as Mode, workedMs: 0, runningSince: null, restEndsAt: null, restSec: target?.restSec ?? DEFAULT_REST_SEC }];
   });
 
   const persist = () => {
@@ -220,7 +226,7 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
       card.sets.push({ ...card.next });
       card.workedMs = 0;
       card.runningSince = null;
-      card.restEndsAt = now() + (card.target?.restSec ?? DEFAULT_REST_SEC) * 1000;
+      card.restEndsAt = now() + card.restSec * 1000;
       card.mode = 'rest';
       persist();
     } else if (action === 'skip' && card.mode === 'rest') {
@@ -241,6 +247,22 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
       return b;
     };
     return h('span', { class: 'reel-chip' }, btn(-1), value, btn(1));
+  };
+
+  /** −/+ during a rest: changes this rest and the ones after it for this exercise. */
+  const restAdjust = (card: Card): HTMLElement => {
+    const btn = (dir: -1 | 1) => {
+      const b = h('button', { type: 'button', class: 'reel-rest-btn', 'aria-label': `${dir < 0 ? 'Shorter' : 'Longer'} rest for ${card.ex.name}` }, `${dir < 0 ? '−' : '+'}${REST_STEP_SEC} s`);
+      b.addEventListener('click', () => {
+        if (card.mode !== 'rest' || card.restEndsAt === null) return;
+        const by = dir * REST_STEP_SEC;
+        card.restSec = clampNumber(card.restSec + by, REST_STEP_SEC, MAX_REST_SEC, DEFAULT_REST_SEC);
+        card.restEndsAt = Math.max(now(), card.restEndsAt + by * 1000);
+        paintClock(card);
+      });
+      return b;
+    };
+    return h('div', { class: 'reel-rest-adjust' }, btn(-1), btn(1));
   };
 
   const buildPage = (card: Card, i: number): HTMLElement => {
@@ -284,7 +306,7 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
             { class: 'reel-body' },
             h('h2', {}, ex.name),
             sets,
-            h('div', { class: 'reel-timer' }, label, time),
+            h('div', { class: 'reel-timer' }, label, time, restAdjust(card)),
             h(
               'div',
               { class: 'reel-quick' },
@@ -403,16 +425,42 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
   }, { passive: true });
 
   // A sideways swipe flips the page; up and down are left to the browser's scrolling.
+  const swipe = (target: EventTarget | null, dx: number, dy: number) => {
+    const page = (target as Element | null)?.closest<HTMLElement>('.reel-page');
+    if (page && !page.classList.contains('reel-summary') && Math.abs(dx) > SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5) flip(page, dx < 0 ? 1 : -1);
+  };
+  // Touch: once a finger clearly moves sideways the browser is kept from dragging the page,
+  // and two fingers never zoom it (CSS touch-action alone isn't reliable on the 3D pages).
+  let touch: { x: number; y: number; sideways: boolean | null } | null = null;
+  feed.addEventListener('touchstart', (ev) => {
+    const t = ev.touches[0];
+    touch = ev.touches.length === 1 ? { x: t.clientX, y: t.clientY, sideways: null } : null;
+  }, { passive: true });
+  feed.addEventListener('touchmove', (ev) => {
+    if (ev.touches.length > 1) {
+      touch = null;
+      return void (ev.cancelable && ev.preventDefault());
+    }
+    if (!touch) return;
+    const t = ev.touches[0];
+    const dx = t.clientX - touch.x;
+    const dy = t.clientY - touch.y;
+    if (touch.sideways === null && Math.hypot(dx, dy) > 10) touch.sideways = Math.abs(dx) > Math.abs(dy);
+    if (touch.sideways && ev.cancelable) ev.preventDefault();
+  }, { passive: false });
+  feed.addEventListener('touchend', (ev) => {
+    const t = ev.changedTouches[0];
+    if (touch?.sideways && t) swipe(ev.target, t.clientX - touch.x, t.clientY - touch.y);
+    touch = null;
+  });
+  feed.addEventListener('touchcancel', () => (touch = null));
+  // Mouse and pen drags (touch is handled above).
   let start: { x: number; y: number } | null = null;
-  feed.addEventListener('pointerdown', (ev) => (start = { x: ev.clientX, y: ev.clientY }));
+  feed.addEventListener('pointerdown', (ev) => (start = ev.pointerType === 'touch' ? null : { x: ev.clientX, y: ev.clientY }));
   feed.addEventListener('pointercancel', () => (start = null));
   feed.addEventListener('pointerup', (ev) => {
-    if (!start) return;
-    const dx = ev.clientX - start.x;
-    const dy = ev.clientY - start.y;
+    if (start) swipe(ev.target, ev.clientX - start.x, ev.clientY - start.y);
     start = null;
-    const page = (ev.target as Element).closest<HTMLElement>('.reel-page');
-    if (page && !page.classList.contains('reel-summary') && Math.abs(dx) > SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5) flip(page, dx < 0 ? 1 : -1);
   });
 
   const onKey = (ev: KeyboardEvent) => {
@@ -433,6 +481,11 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
     }
   };
   document.addEventListener('keydown', onKey);
+  // iOS Safari ignores touch-action for pinch zoom; its own gesture events can stop it.
+  const noZoom = (ev: Event) => ev.preventDefault();
+  document.addEventListener('gesturestart', noZoom);
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport && !viewport.content.includes(NO_ZOOM)) viewport.content += NO_ZOOM;
 
   // Keeps the screen on while the workout is open, where the browser allows it.
   type Lock = { release(): Promise<void> };
@@ -491,6 +544,8 @@ export function renderWorkout(ctx: ViewContext, dayId: string): HTMLElement {
     window.removeEventListener('pagehide', pause);
     window.removeEventListener('pageshow', onPageShow);
     document.removeEventListener('keydown', onKey);
+    document.removeEventListener('gesturestart', noZoom);
+    if (viewport && view === latestView) viewport.content = viewport.content.replace(NO_ZOOM, '');
     document.removeEventListener('visibilitychange', onVisible);
     void lock?.release().catch(() => undefined);
     lock = null;

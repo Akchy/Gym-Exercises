@@ -94,6 +94,32 @@ test.describe('GymFree end-to-end', () => {
     await expect(page.getByRole('heading', { name: 'My weekly plan' })).toBeVisible();
   });
 
+  test('workout mode: sideways swipes flip the page both ways, and nothing drags or zooms', async ({ page }) => {
+    test.skip(test.info().project.name !== 'mobile', 'workout mode is for phones');
+    await start(page);
+    await onboard(page);
+    await page.goto('./#/plan');
+    await page.getByRole('link', { name: 'Start this workout' }).first().click();
+    const card = page.locator('.reel-page').first();
+    await expect(card).toBeVisible();
+    await expect(page.locator('meta[name=viewport]')).toHaveAttribute('content', /user-scalable=no/);
+    const cdp = await page.context().newCDPSession(page);
+    const swipe = async (from: number, to: number, y: number) => {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from, y }] });
+      for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: from + ((to - from) * i) / 8, y: y + i }] });
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    };
+    // Front → how-to → front, swiping left then right, over the photo and over the steps
+    for (const [from, to, y, flipped] of [[320, 60, 500, true], [320, 60, 500, false], [60, 320, 300, true], [60, 320, 300, false]] as const) {
+      await swipe(from, to, y);
+      if (flipped) await expect(card).toHaveClass(/flipped/);
+      else await expect(card).not.toHaveClass(/flipped/);
+    }
+    expect(await page.evaluate(() => [scrollX, document.querySelector('.reel-feed')!.scrollLeft, document.querySelector('.reel-feed')!.scrollTop])).toEqual([0, 0, 0]);
+    await page.getByRole('link', { name: /Close workout/ }).click();
+    await expect(page.locator('meta[name=viewport]')).not.toHaveAttribute('content', /user-scalable=no/);
+  });
+
   test('edit the plan only when asked, then log a workout set by set', async ({ page }) => {
     await start(page);
     await onboard(page);

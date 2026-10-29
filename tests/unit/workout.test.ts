@@ -93,6 +93,27 @@ describe('workout mode', () => {
     expect(page.querySelectorAll('.reel-set.done')).toHaveLength(first.sets + 1);
   });
 
+  it('lets the user change the rest, for this rest and the next ones of the exercise', async () => {
+    await go(app, `/workout/${day().id}`);
+    const page = pages()[0];
+    const rest = day().exercises[0].restSec;
+    const shown = () => page.querySelector('.reel-clock')!.textContent;
+    const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    doSet(page);
+    expect(shown()).toBe(mmss(rest));
+    btn(page, /^Longer rest/).click();
+    btn(page, /^Longer rest/).click();
+    expect(shown()).toBe(mmss(rest + 30));
+    btn(page, /^Shorter rest/).click();
+    expect(shown()).toBe(mmss(rest + 15));
+    btn(page, /^Skip rest/).click();
+    doSet(page);
+    expect(shown()).toBe(mmss(rest + 15));
+    // Never below zero
+    for (let i = 0; i < 60; i++) btn(page, /^Shorter rest/).click();
+    expect(shown()).toBe('00:00');
+  });
+
   it('edits or deletes a logged set', async () => {
     await go(app, `/workout/${day().id}`);
     const page = pages()[0];
