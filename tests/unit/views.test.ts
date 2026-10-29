@@ -40,6 +40,16 @@ describe('dashboard', () => {
     expect(root.textContent).toContain('kcal');
   });
 
+  it('keeps the roulette as it is when the plan day gets new exercises', async () => {
+    const labels = () => [...root.querySelectorAll('.wheel-label')].map((t) => t.textContent).join();
+    const before = labels();
+    const wheel = root.querySelector('.wheel-card');
+    root.querySelector<HTMLButtonElement>(`.highlight button[aria-label="New exercises for ${state().plan[0].name}"]`)!.click();
+    await settle(app);
+    expect(root.querySelector('.wheel-card')).toBe(wheel);
+    expect(labels()).toBe(before);
+  });
+
   it('shows rest days, completed days and empty plans', () => {
     const s = onboardedState();
     s.routine.trainingDays = [2];

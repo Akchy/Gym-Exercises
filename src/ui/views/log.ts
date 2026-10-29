@@ -7,6 +7,7 @@ import { EXERCISES, getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
 import { clear, h, stepper } from '../dom';
 import { renderDemo } from '../demo';
+import { isPhone } from '../device';
 import { exerciseOptions, prescriptionText } from './plan';
 
 /** Heaviest weight from the most recent session of an exercise (to prefill the form). */
@@ -55,6 +56,9 @@ export interface WorkoutDraft {
   date: string;
   durationMin: number | null;
   notes: string;
+  /** Workout mode's clock: time spent in it so far, and when the current visit began (ms). */
+  activeMs: number;
+  resumedAt: number | null;
 }
 
 const optionalNum = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) ? clampNumber(v, 0, max, 0) : null);
@@ -78,6 +82,8 @@ export function readDraft(raw: unknown): WorkoutDraft | null {
     date: isISODate(d.date) ? d.date : '',
     durationMin: optionalNum(d.durationMin, 600),
     notes: cleanText(d.notes, MAX_NOTES),
+    activeMs: Math.round(optionalNum(d.activeMs, 600 * 60_000) ?? 0),
+    resumedAt: typeof d.resumedAt === 'number' && Number.isFinite(d.resumedAt) && d.resumedAt > 0 ? d.resumedAt : null,
   };
 }
 
@@ -120,6 +126,8 @@ export function renderLogForm(ctx: ViewContext, dayId: string): HTMLElement {
       date: date.value,
       durationMin: duration.value === '' ? null : Number(duration.value),
       notes: notes.value,
+      activeMs: restored?.activeMs ?? 0,
+      resumedAt: restored?.resumedAt ?? null,
     };
     ctx.repo.setDraft(dayId, touched ? draft : null);
   };
@@ -219,6 +227,7 @@ export function renderLogForm(ctx: ViewContext, dayId: string): HTMLElement {
     'form',
     { class: 'container' },
     h('h1', {}, day ? day.name : 'Free workout'),
+    day && isPhone() ? h('p', {}, h('a', { href: `#/workout/${day.id}` }, 'Switch to workout mode')) : null,
     restored ? h('p', { class: 'note-inline', role: 'status' }, 'Picked up your unsaved workout from earlier. ', discard) : null,
     h('p', { class: 'muted' }, 'Fill in each set as you finish it. Grey numbers are your target and last weight. Empty sets are not saved.'),
     h('div', { class: 'row' }, h('label', { for: 'log-date' }, 'Date ', date), h('label', { for: 'log-duration' }, 'Duration (min)'), stepper(duration, 5)),

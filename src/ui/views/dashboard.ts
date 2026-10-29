@@ -4,6 +4,7 @@ import { weekStreak, workoutsInWeek } from '../../core/progress';
 import { WEEKDAY_NAMES, type PlanDay } from '../../core/types';
 import { getExercise } from '../../data/exercises';
 import type { ViewContext } from '../context';
+import { isPhone, startWorkoutHref } from '../device';
 import { h } from '../dom';
 import { MUSCLE_LABELS } from '../labels';
 import { animateArrivals, reshuffleButton } from './plan';
@@ -23,6 +24,12 @@ export function nextPlanDay(plan: readonly PlanDay[], todayWeekday: number): { d
 function stat(label: string, value: string | number): HTMLElement {
   return h('div', { class: 'stat' }, h('span', { class: 'stat-value' }, String(value)), h('span', { class: 'stat-label' }, label));
 }
+
+/**
+ * The roulette is kept across re-renders, so saving something else on the home page (like
+ * new exercises for today) doesn't redraw it with a different set or lose the last pick.
+ */
+let wheel: HTMLElement | null = null;
 
 export function renderDashboard(ctx: ViewContext): HTMLElement {
   const { state } = ctx;
@@ -53,7 +60,8 @@ export function renderDashboard(ctx: ViewContext): HTMLElement {
       h(
         'div',
         { class: 'row' },
-        h('a', { href: `#/log/${day.id}`, class: 'button primary' }, inDays === 0 && !doneToday ? 'Start workout' : 'Log this workout'),
+        // Phones always start workout mode; elsewhere, a day that isn't due today is logged in the list view.
+        h('a', { href: startWorkoutHref(day.id), class: 'button primary' }, isPhone() || (inDays === 0 && !doneToday) ? 'Start workout' : 'Log this workout'),
         reshuffleButton(ctx, day),
       ),
     );
@@ -76,7 +84,7 @@ export function renderDashboard(ctx: ViewContext): HTMLElement {
     installCard,
     h('h1', {}, state.profile.name ? `Hi, ${state.profile.name}` : 'Your training'),
     h('p', { class: 'muted' }, `Goal: ${GOAL_PROFILES[state.goal].label}`),
-    h('div', { class: 'today-row' }, todayCard, renderSpinWheel()),
+    h('div', { class: 'today-row' }, todayCard, (wheel ??= renderSpinWheel())),
     h(
       'section',
       { class: 'stats', 'aria-label': 'Quick stats' },

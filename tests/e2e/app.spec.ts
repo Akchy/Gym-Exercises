@@ -112,6 +112,14 @@ test.describe('GymFree end-to-end', () => {
     await expect(chestDay.getByText('Hammer Curl')).toBeVisible();
 
     await chestDay.getByRole('link', { name: 'Start this workout' }).click();
+    // Phones open workout mode (the list view is one link away); other devices the list view
+    if (test.info().project.name === 'mobile') {
+      await expect(page.locator('.reel-page').first()).toBeVisible();
+      await expect(page.locator('.topbar')).toHaveCount(0);
+      await page.getByRole('link', { name: 'Switch to list view' }).click();
+    } else {
+      await expect(page.locator('.reel')).toHaveCount(0);
+    }
     await expect(page.getByRole('heading', { name: 'Chest & Arms' })).toBeVisible();
     // Every exercise starts with exactly one empty set
     const entries = page.locator('.log-entry');

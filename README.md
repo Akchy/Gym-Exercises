@@ -10,6 +10,16 @@ Pick your goal and the days you can train, and GymFree builds you a weekly plan 
 
 [![GymFree home page](docs/images/image.png)](https://gym.davish.dev/)
 
+### Workout mode
+
+Start a workout on your phone and each exercise fills the screen. Tap start and stop to log a set, swipe up for the next exercise, and swipe sideways to see how to do it. Tap a logged set to fix it.
+
+<p>
+  <img src="docs/images/workout-mode-set.png" alt="Workout mode: a set being timed, with earlier sets above the timer" width="240">
+  <img src="docs/images/workout-mode-how-to.png" alt="Workout mode flipped to the how-to side: start and end photos, steps and a tip" width="240">
+  <img src="docs/images/workout-mode-edit-set.png" alt="Workout mode: editing the weight and reps of a logged set" width="240">
+</p>
+
 ## Host your own
 
 GymFree builds to a plain static site, so it runs on any web host.

@@ -9,6 +9,7 @@ import type { Repository } from '../core/sync';
 import type { AppState } from '../core/types';
 import type { ToastAction, ViewContext } from './context';
 import type { InstallManager } from '../pwa/register';
+import { isPhone } from './device';
 import { clear, h, svg } from './dom';
 import { prefersReducedMotion } from './figure';
 import { effectiveTheme, setTheme, THEME_EVENT } from './theme';
@@ -21,6 +22,7 @@ import { renderPlan, renderPlanEditor } from './views/plan';
 import { renderProgress } from './views/progress';
 import { renderSettings, syncStatusText } from './views/settings';
 import { renderLinkChoice, renderUnavailable, renderWelcome } from './views/welcome';
+import { renderWorkout } from './views/workout';
 
 export interface AppOptions {
   now?: () => Date;
@@ -39,7 +41,7 @@ const NAV = [
 ] as const;
 
 /** First path segment of every page; anything else is "Page not found". */
-const SECTIONS = new Set(['', 'onboarding', 'plan', 'exercises', 'log', 'progress', 'settings']);
+const SECTIONS = new Set(['', 'onboarding', 'plan', 'exercises', 'log', 'workout', 'progress', 'settings']);
 /**
  * The page a link pointed to before the welcome screen. Kept in sessionStorage because
  * Google sign-in leaves the app and comes back to the base URL, without the hash.
@@ -181,7 +183,7 @@ export class App {
   }
 
   private onLogForm(): boolean {
-    return /^\/log\/[^/?]+/.test(this.route());
+    return /^\/(log|workout)\/[^/?]+/.test(this.route());
   }
 
   private route(): string {
@@ -395,6 +397,11 @@ export class App {
       case 'log':
         view = param ? renderLogForm(ctx, decodeURIComponent(param)) : renderLogPicker(ctx);
         break;
+      case 'workout':
+        // Workout mode is for phones; elsewhere (and for free workouts) the list view is used.
+        if (param === 'free' || !isPhone()) return this.navigate(`/log/${param}`);
+        view = this.state.plan.some((d) => d.id === decodeURIComponent(param)) ? renderWorkout(ctx, decodeURIComponent(param)) : renderNotFound({ path, hasData: true });
+        break;
       case 'progress':
         view = renderProgress(ctx);
         break;
@@ -404,7 +411,9 @@ export class App {
       default:
         view = renderNotFound({ path, hasData: true });
     }
-    this.mainEl.append(this.nav(path), view);
+    // Workout mode fills the screen, so it has no top bar.
+    if (section === 'workout' && view.classList.contains('reel')) this.mainEl.append(view);
+    else this.mainEl.append(this.nav(path), view);
     if (path === this.renderedPath) return;
     this.renderedPath = path;
     const scrollTo = this.win.scrollTo?.bind(this.win);

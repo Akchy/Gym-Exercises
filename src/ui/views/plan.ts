@@ -7,6 +7,7 @@ import { EXERCISES, filterExercises, getExercise, type Exercise } from '../../da
 import type { ViewContext } from '../context';
 import { h, select, stepper } from '../dom';
 import { renderDemo } from '../demo';
+import { startWorkoutHref } from '../device';
 import { MUSCLE_LABELS } from '../labels';
 
 export function prescriptionText(pe: Pick<PlannedExercise, 'sets' | 'repsMin' | 'repsMax' | 'restSec'>): string {
@@ -129,7 +130,7 @@ export function renderPlan(ctx: ViewContext): HTMLElement {
         h('p', { class: 'muted' }, day.muscleGroups.map((g) => MUSCLE_LABELS[g]).join(' · ')),
         h('ul', { class: 'exercise-list' }, ...animateArrivals(ctx, day, day.exercises.map((pe) => exerciseItem(ctx, pe, 'plan')))),
         day.cardioMinutes ? h('p', { class: 'muted' }, `+ ${day.cardioMinutes} min cardio of your choice`) : null,
-        h('div', { class: 'row' }, h('a', { href: `#/log/${day.id}`, class: 'button primary' }, 'Start this workout'), reshuffleButton(ctx, day)),
+        h('div', { class: 'row' }, h('a', { href: startWorkoutHref(day.id), class: 'button primary' }, 'Start this workout'), reshuffleButton(ctx, day)),
       ),
     ),
   );
